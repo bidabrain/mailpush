@@ -13,6 +13,8 @@ import android.provider.ContactsContract
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -117,6 +120,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.google.firebase.messaging.FirebaseMessaging
@@ -237,6 +241,19 @@ fun AppRoot(navTarget: MutableState<NavTarget?>) {
             nav.navigate("message/${target.account}/${target.messageId}")
         }
     }
+
+    // 在根页(unified,返回本会退出 app)时:连按两次返回才彻底关闭;其他页正常返回。
+    val currentRoute = nav.currentBackStackEntryAsState().value?.destination?.route
+    var lastBack by remember { mutableStateOf(0L) }
+    BackHandler(enabled = currentRoute == "unified") {
+        val now = System.currentTimeMillis()
+        if (now - lastBack < 2000) {
+            (context as? Activity)?.finishAndRemoveTask()  // 彻底关闭 + 从最近任务移除
+        } else {
+            lastBack = now
+            Toast.makeText(context, "再按一次退出", Toast.LENGTH_SHORT).show()
+        }
+    }
 }
 
 private fun NavHostController.switchTab(route: String) {
@@ -248,11 +265,24 @@ private fun NavHostController.switchTab(route: String) {
 }
 
 @Composable
-private fun MelonBottomBar(nav: NavHostController, current: String) {
+private fun MelonBottomBar(
+    nav: NavHostController,
+    current: String,
+    onReselectUnified: () -> Unit = {},  // 已在统一页时再次点「统一」(双击)触发,用于回顶
+) {
+    var lastUnifiedTap by remember { mutableStateOf(0L) }
     NavigationBar {
         NavigationBarItem(
             selected = current == "unified",
-            onClick = { if (current != "unified") nav.switchTab("unified") },
+            onClick = {
+                if (current != "unified") {
+                    nav.switchTab("unified")
+                } else {
+                    val now = System.currentTimeMillis()
+                    if (now - lastUnifiedTap < 350) onReselectUnified()  // 350ms 内第二击 = 双击
+                    lastUnifiedTap = now
+                }
+            },
             icon = { Icon(Icons.Default.Inbox, null) },
             label = { Text("统一") },
         )
@@ -279,10 +309,11 @@ private fun MelonBottomBar(nav: NavHostController, current: String) {
 @Composable
 fun UnifiedScreen(vm: MailViewModel, nav: NavHostController) {
     val baseUrl by vm.settings.baseUrl.collectAsState(initial = "")
-    LaunchedEffect(baseUrl) { if (baseUrl.isNotBlank()) vm.loadUnified() }
+    LaunchedEffect(baseUrl) { if (baseUrl.isNotBlank()) { vm.loadUnified(); vm.loadUnread() } }
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Pair<String, String>?>(null) }  // (account, id)
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val shown = if (query.isBlank()) vm.unified else vm.unified.filter {
         it.envelope.sender.contains(query, true) ||
             it.envelope.subject.contains(query, true) ||
@@ -293,11 +324,18 @@ fun UnifiedScreen(vm: MailViewModel, nav: NavHostController) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("统一收件箱") },
+                title = {
+                    val unread = vm.unreadTotal
+                    Text(if (unread > 0) "统一收件箱 · $unread 未读" else "统一收件箱")
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
-        bottomBar = { MelonBottomBar(nav, "unified") },
+        bottomBar = {
+            MelonBottomBar(nav, "unified", onReselectUnified = {
+                scope.launch { listState.animateScrollToItem(0) }
+            })
+        },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (baseUrl.isBlank()) {
@@ -308,7 +346,7 @@ fun UnifiedScreen(vm: MailViewModel, nav: NavHostController) {
             vm.unifiedError?.let { ErrorText(it) }
             PullToRefreshBox(
                 isRefreshing = vm.unifiedLoading,
-                onRefresh = { vm.loadUnified(force = true) },
+                onRefresh = { vm.loadUnified(force = true); vm.loadUnread() },
                 modifier = Modifier.fillMaxSize(),
             ) {
                 // 置顶区(跨账号,仅非搜索时);普通列表去掉已置顶的避免重复。
@@ -402,7 +440,7 @@ private fun UnifiedRow(item: AccountEnvelope, pinned: Boolean = false, onClick: 
 @Composable
 fun AccountsScreen(vm: MailViewModel, nav: NavHostController) {
     val baseUrl by vm.settings.baseUrl.collectAsState(initial = "")
-    LaunchedEffect(baseUrl) { if (baseUrl.isNotBlank()) vm.loadAccounts() }
+    LaunchedEffect(baseUrl) { if (baseUrl.isNotBlank()) { vm.loadAccounts(); vm.loadUnread() } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -425,7 +463,7 @@ fun AccountsScreen(vm: MailViewModel, nav: NavHostController) {
             if (vm.accountsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(vm.accounts, key = { it }) { acc ->
-                    AccountCard(acc) { nav.navigate("inbox/$acc") }
+                    AccountCard(acc, vm.unreadCounts[acc] ?: 0) { nav.navigate("inbox/$acc") }
                 }
             }
         }
@@ -433,7 +471,7 @@ fun AccountsScreen(vm: MailViewModel, nav: NavHostController) {
 }
 
 @Composable
-private fun AccountCard(account: String, onClick: () -> Unit) {
+private fun AccountCard(account: String, unread: Int = 0, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(18.dp),
@@ -446,10 +484,36 @@ private fun AccountCard(account: String, onClick: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(account, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                Text("点按查看收件箱", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (unread > 0) "$unread 封未读" else "点按查看收件箱",
+                    color = if (unread > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (unread > 0) {
+                UnreadBadge(unread)
+                Spacer(Modifier.width(8.dp))
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+@Composable
+private fun UnreadBadge(count: Int) {
+    Box(
+        Modifier
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primary)
+            .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (count > 99) "99+" else "$count",
+            color = MaterialTheme.colorScheme.onPrimary,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 
@@ -716,6 +780,17 @@ fun MessageScreen(vm: MailViewModel, account: String, id: String, folder: String
     // 确保该账号对应文件夹已加载——从通知深链进入时,inbox 页面从未真正组合过,其 loadInbox
     // 不会触发,导致 envelopeById 找不到这封 → 标题/发件人空白。这里主动加载(已加载则 no-op)。
     LaunchedEffect(account, folder) { vm.loadInbox(account, folder) }
+    // 后台+新鲜度跳过时,刚到的新信可能不在已加载列表里(头部会空)。等当前加载结束后,
+    // 若仍找不到这封,就强制刷一次把它补进来;只试一次,防死循环。
+    var triedHeaderRefresh by remember(account, id) { mutableStateOf(false) }
+    LaunchedEffect(account, id, vm.inbox, vm.inboxLoading) {
+        if (!triedHeaderRefresh && !vm.inboxLoading &&
+            vm.inboxAccount == account && vm.envelopeById(id) == null
+        ) {
+            triedHeaderRefresh = true
+            vm.loadInbox(account, folder, force = true)
+        }
+    }
     val isSent = folder != INBOX
     // 不要 remember:随 vm.inbox 变化自动刷新(数据到位后标题/发件人就显示出来)。
     val env = vm.envelopeById(id)

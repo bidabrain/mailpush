@@ -1,4 +1,4 @@
-# mailpush server (方案A: FastAPI 包 himalaya CLI)
+# mailpush server (FastAPI;收读走 imaplib 连接池,发信走 smtplib)
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.32,<0.35
 firebase-admin>=6.5,<7

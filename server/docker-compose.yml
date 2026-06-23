@@ -5,7 +5,7 @@
 #   /DATA/AppData/mailpush/
 #   ├── src/      <- 本仓库 server/ 内容(compose 在这里执行)
 #   ├── config/   <- config.toml / service-account.json / device-token / api-token / secrets/
-#   └── data/     <- himalaya/mirador 可写状态(自动创建)
+#   └── data/     <- 可写状态:附件缓存 / goimapnotify last-seen / device-tokens(自动创建)
 # 卷目录可通过 .env 切换(默认是 ZimaOS 布局):
 #   CONFIG_DIR  默认 ../config   DATA_DIR 默认 ../data   (相对 compose 所在目录)
 # 本机测试:在 .env 里设 CONFIG_DIR=./config  DATA_DIR=./data,

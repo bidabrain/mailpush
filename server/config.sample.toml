@@ -82,16 +82,13 @@ message.send.save-copy = false
 # 例(126 邮箱 / 网易)—— 必须用「客户端授权码」(网页版 设置→POP3/SMTP/IMAP 里开启服务并生成),
 #   不能用登录密码;开通后 host 同 163 系。
 #
-# ⚠️⚠️ 已知问题(2026-06 实测):126 在【mail-api 读信侧用不了】——
-#   网易 IMAP 要求客户端登录后发 IMAP ID(RFC 2971)报家门,否则拒登(报「Unsafe Login」
-#   或 himalaya 侧表现为 502 / 登录失败)。而本项目的引擎 himalaya v1.2.0【不支持发 IMAP ID】
-#   (上游 open issue pimalaya/himalaya#656),所以即使授权码正确,mail-api 调 himalaya 读
-#   126 邮件(/msg、/attachments)仍会失败 → app 点开 126 邮件持续 502。
-#   现状结论:
-#     - 推送(mail-watch / goimapnotify)侧:可加 enableIDCommand: true 解决,能跑通(见 imapnotify.sample.yaml)。
-#     - 读信/发信(mail-api / himalaya)侧:暂【无解】,要么等 himalaya 支持 IMAP ID,
-#       要么给 126 单独写一条 Python imaplib 读取路径绕开 himalaya。
-#   => 目前【不建议】把 126 配进 mail-api;真要收 126 推送,接受"能收到推送但点开读不了正文"。
+# ✅ 0.2.0 起【已支持】:网易 IMAP 要求客户端登录后发 IMAP ID(RFC 2971)报家门,否则拒登
+#   (报「Unsafe Login」)。0.1.x 的 himalaya v1.2.0 不支持发 IMAP ID(issue #656)导致读信 502;
+#   0.2.0 改用 Python imaplib 连接池后,在代码层登录后无条件发 IMAP ID → 126/163 读信已跑通。
+#   两侧都正常:
+#     - 推送(mail-watch / goimapnotify)侧:加 enableIDCommand: true(见 imapnotify.sample.yaml)。
+#     - 读信/发信(mail-api)侧:imap_pool 自动发 ID,无需额外配置。
+#   => 正常把 126/163 配进 mail-api 即可;记得密钥文件存的是「客户端授权码」而非登录密码。
 #
 # ⚠️ 凭据排错:goimapnotify/himalaya 报 "LOGIN ... password error" 时,先查
 #   (a) 126 网页版是否已开启 IMAP 服务;(b) 密钥文件存的是否为「客户端授权码」而非登录密码。

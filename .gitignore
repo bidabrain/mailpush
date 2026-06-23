@@ -31,3 +31,5 @@ android/app/google-services.json
 .DS_Store
 # 本地开发续接用的决策/进度记录,不进 Git
 PROJECT-MEMORY.md
+# 内部改造设计稿(imaplib 连接池替换 himalaya),不进 Git
+imap-pool-design.md

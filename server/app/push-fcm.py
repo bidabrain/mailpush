@@ -2,29 +2,29 @@
 """goimapnotify onNewMail 钩子 → FCM 推送(多设备)。
 
 被 imapnotify.yaml 的 onNewMail 调用,只带一个参数:账号名(goimapnotify 不传
-sender/subject)。本脚本用 himalaya 抓该账号 INBOX 最新一封取 sender/subject。
+sender/subject)。本脚本用 imap_client 抓该账号 INBOX 最新一封取 sender/subject。
 
 设备 token 由安卓端自动上报到 mail-api 的 /register-token,存 /data(见 devicetokens.py);
 本脚本群发到全部已注册设备,并自动清理失效 token。
 
 去重:用 /data 里的 last-seen,只有"最新一封 id 与上次不同"才推送;首次只记基线不推
 (避免 goimapnotify 启动时把已存在的旧信当新信)。
+
+注:本脚本是 goimapnotify 每来新信 fork 的短命进程,imap_pool 在此无法跨调用复用连接
+(每次推送新建一次连接;Gmail ~1s,KIAS 首连 ~53s,属后台行为可接受)。
 """
-import json
+import asyncio
 import os
-import subprocess
 import sys
 
 import firebase_admin
 from firebase_admin import credentials, messaging
 
 import devicetokens
+import imap_client
 
 SA_PATH = os.environ.get("FIREBASE_SA", "/config/service-account.json")
-CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.toml")
-HIMALAYA_BIN = os.environ.get("HIMALAYA_BIN", "himalaya")
 STATE_DIR = os.environ.get("MAILPUSH_STATE_DIR", "/data/state/mailpush")
-TIMEOUT = float(os.environ.get("HIMALAYA_TIMEOUT", "30"))
 
 
 def log(msg: str) -> None:
@@ -32,31 +32,17 @@ def log(msg: str) -> None:
 
 
 def fetch_latest(account: str):
-    """用 himalaya 抓 INBOX 最新一封,返回 (id, sender, subject) 或 None。
-    注意:不加 order by(会触发 Gmail 不支持的 SORT);himalaya 默认最新在前。"""
+    """用 imap_client 抓 INBOX 最新一封,返回 (id, sender, subject) 或 None。"""
     try:
-        out = subprocess.run(
-            [HIMALAYA_BIN, "-c", CONFIG_PATH, "envelope", "list",
-             "-a", account, "-f", "INBOX", "-p", "1", "-s", "1", "-o", "json"],
-            capture_output=True, timeout=TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        log(f"himalaya 抓最新信超时(account={account})")
+        envs = asyncio.run(imap_client.list_envelopes(account, "INBOX", 1, 1))
+    except imap_client.ImapError as exc:
+        log(f"取最新信失败(account={account}): {exc}")
         return None
-    if out.returncode != 0:
-        log(f"himalaya 失败(account={account}): {out.stderr.decode(errors='replace')[:300]}")
+    except Exception as exc:  # noqa: BLE001 — 钩子里别让 goimapnotify 崩
+        log(f"取最新信异常(account={account}): {exc!r}")
         return None
-    try:
-        data = json.loads(out.stdout.decode(errors="replace") or "null")
-    except json.JSONDecodeError as exc:
-        log(f"himalaya JSON 解析失败: {exc}")
-        return None
-
-    envs = data
-    if isinstance(data, dict):
-        envs = data.get("envelopes") or data.get("data") or []
-    if not isinstance(envs, list) or not envs:
-        log("himalaya 返回空列表")
+    if not envs:
+        log("返回空列表")
         return None
     env = envs[0]
     msg_id = str(env.get("id", "")) if isinstance(env, dict) else ""

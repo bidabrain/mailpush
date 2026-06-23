@@ -1,16 +1,21 @@
-"""mail-api —— 手机端调用的薄 HTTP API(方案A:FastAPI 包 himalaya CLI)。
+"""mail-api —— 手机端调用的薄 HTTP API(FastAPI)。
+
+收/读走 imap_client(imaplib 持久连接池),发信走 mailsend(smtplib)。
 
 鉴权:所有业务端点要求 `Authorization: Bearer <api-token 文件内容>`。
 暴露:务必放在 Cloudflare Tunnel + Access 后,严禁裸暴露公网
       (它能读全部邮件 + 以你名义发信)。
 
-端点 → himalaya:
-    GET  /healthz            无需鉴权,存活探针
-    GET  /accounts           读 config.toml 里的账号名列表
-    GET  /inbox?account=&page=&page_size=&folder=   envelope list
-    GET  /msg/{id}?account=&mark_read=              message read(默认 --preview 不标已读)
-    POST /send               用字段拼 RFC822 → message send
-    POST /reply/{id}         template reply → 注入正文 → template send
+端点:
+    GET    /healthz           无需鉴权,存活探针
+    GET    /accounts          读 config.toml 里的账号名列表
+    GET    /inbox             列表(imap_client.list_envelopes)
+    GET    /folders           文件夹名 + 探测到的「已发」
+    GET    /msg/{id}          导出 .eml 解析正文(默认不标已读)
+    DELETE /msg/{id}          删除(移到回收站)
+    POST   /send              拼 MIME → smtplib 发送
+    POST   /reply/{id}        回复模板 → 拼 MIME → smtplib
+    POST   /forward/{id}      转发模板(带原附件)→ smtplib
 """
 from __future__ import annotations
 
@@ -31,7 +36,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import devicetokens
-import himalaya
+import imap_client
 import mailsend
 from models import OkResponse, TokenRegister
 
@@ -102,8 +107,8 @@ async def inbox(
     page_size: int = Query(50, ge=1, le=200),
 ):
     try:
-        return await himalaya.list_envelopes(account, folder, page, page_size)
-    except himalaya.HimalayaError as exc:
+        return await imap_client.list_envelopes(account, folder, page, page_size)
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
 
@@ -125,12 +130,38 @@ def _detect_sent(names: list[str]) -> str | None:
     return None
 
 
+@app.get("/unread", dependencies=[Depends(require_auth)])
+async def unread(account: str, folder: str = "INBOX") -> dict:
+    """单账户某文件夹未读数(IMAP SEARCH UNSEEN)。"""
+    try:
+        n = await imap_client.unread_count(account, folder)
+    except imap_client.ImapError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"account": account, "unread": n}
+
+
+@app.get("/unread-all", dependencies=[Depends(require_auth)])
+async def unread_all() -> dict:
+    """各账户 INBOX 未读数 + 总数(供统一收件箱总未读、账户列表各自未读)。
+    某账户取不到则该项为 null,不计入 total,不影响其他账户。"""
+    counts: dict[str, int | None] = {}
+    total = 0
+    for acc in _load_accounts():
+        try:
+            n = await imap_client.unread_count(acc, "INBOX")
+            counts[acc] = n
+            total += n
+        except Exception:  # noqa: BLE001 — 单账户失败不拖累整体
+            counts[acc] = None
+    return {"counts": counts, "total": total}
+
+
 @app.get("/folders", dependencies=[Depends(require_auth)])
 async def folders(account: str) -> dict:
     """列出文件夹名,并给出探测到的「已发」文件夹(供 app 显示已发件箱)。"""
     try:
-        raw = await himalaya.list_folders(account)
-    except himalaya.HimalayaError as exc:
+        raw = await imap_client.list_folders(account)
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     names: list[str] = []
     for f in raw or []:
@@ -179,8 +210,8 @@ async def read_msg(
     workdir = tempfile.mkdtemp(prefix="msg-")
     try:
         try:
-            await himalaya.export_full(account, msg_id, workdir, folder)
-        except himalaya.HimalayaError as exc:
+            await imap_client.export_full(account, msg_id, workdir, folder)
+        except imap_client.ImapError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
         files = [os.path.join(workdir, f) for f in os.listdir(workdir)
                  if os.path.isfile(os.path.join(workdir, f))]
@@ -195,8 +226,8 @@ async def read_msg(
 
     if mark_read:
         try:
-            await himalaya.add_flag(account, msg_id, "seen", folder)
-        except himalaya.HimalayaError:
+            await imap_client.add_flag(account, msg_id, "seen", folder)
+        except imap_client.ImapError:
             pass  # 标已读失败不影响读信
 
     return {"html": html, "text": text}
@@ -206,8 +237,8 @@ async def read_msg(
 async def delete_msg(msg_id: str, account: str, folder: str = "INBOX") -> dict:
     """删除邮件(移到回收站)。"""
     try:
-        await himalaya.delete_message(account, msg_id, folder)
-    except himalaya.HimalayaError as exc:
+        await imap_client.delete_message(account, msg_id, folder)
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True}
 
@@ -326,7 +357,7 @@ async def _ensure_attachments(account: str, folder: str, msg_id: str) -> str:
     if os.path.isdir(dest) and os.listdir(dest):
         return dest
     os.makedirs(dest, exist_ok=True)
-    await himalaya.download_attachments(account, msg_id, dest, folder)
+    await imap_client.download_attachments(account, msg_id, dest, folder)
     return dest
 
 
@@ -334,7 +365,7 @@ async def _ensure_attachments(account: str, folder: str, msg_id: str) -> str:
 async def list_attachments(msg_id: str, account: str, folder: str = "INBOX") -> dict:
     try:
         dest = await _ensure_attachments(account, folder, msg_id)
-    except himalaya.HimalayaError as exc:
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     items = [
         {"name": name, "size": os.path.getsize(os.path.join(dest, name))}
@@ -349,7 +380,7 @@ async def get_attachment(msg_id: str, account: str, name: str, folder: str = "IN
     safe = os.path.basename(name)  # 防路径穿越
     try:
         dest = await _ensure_attachments(account, folder, msg_id)
-    except himalaya.HimalayaError as exc:
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     path = os.path.join(dest, safe)
     if not os.path.isfile(path):
@@ -369,8 +400,8 @@ async def reply(
     """回复(multipart):用 himalaya 回复模板拿到收件人/主题/引用/In-Reply-To,
     自己拼 MIME,经 smtplib 发送(不走 himalaya 发送,避免 IMAP APPEND 问题)。"""
     try:
-        template = await himalaya.reply_template(account, msg_id, reply_all, folder)
-    except himalaya.HimalayaError as exc:
+        template = await imap_client.reply_template(account, msg_id, reply_all, folder)
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
     head, _, quoted = template.partition("\n\n")
@@ -414,8 +445,8 @@ async def forward(
     if not from_addr:
         raise HTTPException(status_code=400, detail=f"账号 {account} 在 config.toml 缺少 email/login")
     try:
-        template = await himalaya.forward_template(account, msg_id, folder)
-    except himalaya.HimalayaError as exc:
+        template = await imap_client.forward_template(account, msg_id, folder)
+    except imap_client.ImapError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
     head, _, quoted = template.partition("\n\n")
@@ -432,7 +463,7 @@ async def forward(
                 ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
                 with open(path, "rb") as fh:
                     attachments.append((name, fh.read(), ctype))
-    except himalaya.HimalayaError:
+    except imap_client.ImapError:
         pass  # 原附件取不到就只转发正文,不阻断
 
     eml = _build_eml(from_addr, to_list, [], subject, full_body, False, attachments)

@@ -39,6 +39,10 @@ interface MailApi {
     @GET("folders")
     suspend fun folders(@Query("account") account: String): FoldersResponse
 
+    /** 各账户 INBOX 未读数 + 总数。 */
+    @GET("unread-all")
+    suspend fun unreadAll(): UnreadAllResponse
+
     /** 返回 {html, text}:优先 html(WebView 渲染),无则 text。 */
     @GET("msg/{id}")
     suspend fun message(

@@ -18,6 +18,9 @@ import com.melonmail.app.data.MsgBody
 import com.melonmail.app.data.PinStore
 import com.melonmail.app.data.PinnedMail
 import com.melonmail.app.data.ReplyRequest
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -138,9 +141,40 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var unifiedPage = 1
 
+    // 新鲜度:同一账户/文件夹最近联网拉过就别重复拉。统一收件箱与单账户【共享】这张表,
+    // 所以统一收件箱拉过的账户,点进单账户时直接用缓存、不再重复请求(force=true 下拉刷新可绕过)。
+    private val freshMs = 60_000L
+    private val lastFetched = mutableMapOf<String, Long>()  // "account|folder" -> 上次成功联网时刻
+    private var lastUnifiedFetch = 0L
+    private fun freshKey(account: String, folder: String) = "$account|$folder"
+    private fun isFresh(account: String, folder: String) =
+        System.currentTimeMillis() - (lastFetched[freshKey(account, folder)] ?: 0L) < freshMs
+
     /** 取服务端版本号(设置页显示);失败返回 null。 */
     suspend fun fetchServerVersion(): String? =
         runCatching { Api.service?.version()?.version }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    // ---- 未读数(统一收件箱总未读 + 各账户未读;服务端 SEARCH UNSEEN 全量统计)----
+    var unreadCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+        private set
+    val unreadTotal: Int get() = unreadCounts.values.sum()
+    private var unreadLoading = false
+
+    fun loadUnread() {
+        if (unreadLoading) return  // 防并发
+        val svc = Api.service ?: return
+        viewModelScope.launch {
+            unreadLoading = true
+            try {
+                val resp = svc.unreadAll()
+                unreadCounts = resp.counts.filterValues { it != null }.mapValues { it.value!! }
+            } catch (_: Exception) {
+                // 取不到就保留旧值,不打扰用户
+            } finally {
+                unreadLoading = false
+            }
+        }
+    }
 
     fun loadAccounts() {
         if (accounts.isEmpty()) cache.loadAccounts().takeIf { it.isNotEmpty() }?.let { accounts = it }
@@ -169,6 +203,12 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         inboxHasMore = true
         // 先用缓存填充(离线也能看;联网成功后覆盖)
         inbox = cache.loadInbox(account, folder)
+        // 新鲜度:最近已联网拉过(可能是统一收件箱拉的)→ 直接用缓存,跳过重复请求
+        if (!force && isFresh(account, folder) && inbox.isNotEmpty()) {
+            inboxError = null
+            inboxHasMore = inbox.size >= PAGE_SIZE
+            return
+        }
         val svc = Api.service ?: return
         viewModelScope.launch {
             inboxLoading = true; inboxError = null
@@ -177,6 +217,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 inbox = list
                 inboxHasMore = list.size >= PAGE_SIZE
                 cache.saveInbox(account, folder, list)
+                lastFetched[freshKey(account, folder)] = System.currentTimeMillis()
                 reconcilePins(account, folder, list)  // 服务器已删的置顶项自动取消
             } catch (e: Exception) {
                 if (inbox.isEmpty()) inbox = cache.loadInbox(account, folder)
@@ -214,9 +255,11 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 探测账号的「已发」文件夹名(结果缓存,供 InboxScreen 决定是否显示「已发」切换)。 */
+    /** 探测账号的「已发」文件夹名(结果缓存,供 InboxScreen 决定是否显示「已发」切换)。
+     *  只缓存「探到了」的结果(非 null);探到 null(失败或服务端当时没探到)则下次进收件箱重试,
+     *  这样服务端后来修好/补上已发文件夹时 app 能自愈,无需重启。 */
     fun loadFolders(account: String) {
-        if (sentFolders.containsKey(account)) return
+        if (sentFolders[account] != null) return
         val svc = Api.service ?: return
         viewModelScope.launch {
             runCatching { svc.folders(account) }.onSuccess { sentFolders[account] = it.sent }
@@ -231,13 +274,23 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     /** 从所有账号各取一页,合并;返回 (列表, 是否有账号还满页). */
     private suspend fun fetchUnifiedPage(accs: List<String>, page: Int): Pair<List<AccountEnvelope>, Boolean> {
         val svc = Api.service ?: return emptyList<AccountEnvelope>() to false
+        // 各账户【并发】拉(网络 IO 并行,整轮耗时 ≈ 最慢账户,而非各账户之和)。
+        val results = coroutineScope {
+            accs.map { acc -> async { acc to runCatching { svc.inbox(acc, page = page, pageSize = PAGE_SIZE) } } }
+                .awaitAll()
+        }
+        // 结果回主线程后【串行】处理:cache/置顶/新鲜度都改共享状态,串行即无并发竞争。
         val all = mutableListOf<AccountEnvelope>()
         var anyFull = false
-        for (acc in accs) {
-            val list = runCatching { svc.inbox(acc, page = page, pageSize = PAGE_SIZE) }.getOrElse { emptyList() }
-            if (page == 1 && list.isNotEmpty()) {
-                cache.saveInbox(acc, INBOX, list)       // 顺手缓存,供离线
-                reconcilePins(acc, INBOX, list)         // 统一收件箱刷新也对账置顶
+        for ((acc, result) in results) {
+            val list = result.getOrElse { emptyList() }
+            if (page == 1 && result.isSuccess) {
+                // 登记新鲜度:点进该单账户时即可复用、不再重复拉
+                lastFetched[freshKey(acc, INBOX)] = System.currentTimeMillis()
+                if (list.isNotEmpty()) {
+                    cache.saveInbox(acc, INBOX, list)   // 顺手缓存,供离线
+                    reconcilePins(acc, INBOX, list)     // 统一收件箱刷新也对账置顶
+                }
             }
             all += list.map { AccountEnvelope(acc, it) }
             if (list.size >= PAGE_SIZE) anyFull = true
@@ -246,6 +299,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadUnified(force: Boolean = false) {
+        if (unifiedLoading) return  // 防并发:正在拉就不再启第二条
+        // 新鲜度:最近拉过且有数据 → 用现有,跳过整轮全账户请求(下拉刷新 force=true 绕过)
+        if (!force && unified.isNotEmpty() &&
+            System.currentTimeMillis() - lastUnifiedFetch < freshMs) return
         // 先用缓存拼一版(离线可看)
         if (unified.isEmpty()) {
             val cachedAccs = accounts.ifEmpty { cache.loadAccounts() }
@@ -264,6 +321,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                     unified = list.sortedByDescending { it.envelope.date ?: "" }
                     unifiedHasMore = anyFull
                 }
+                lastUnifiedFetch = System.currentTimeMillis()
             } catch (e: Exception) {
                 unifiedError = "离线或加载失败:${e.message}"
             } finally {

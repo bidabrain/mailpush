@@ -48,6 +48,12 @@ data class FoldersResponse(
 )
 
 @Serializable
+data class UnreadAllResponse(
+    val counts: Map<String, Int?> = emptyMap(),  // 账户名 -> 未读数(null=该账户取不到)
+    val total: Int = 0,
+)
+
+@Serializable
 data class SendRequest(
     val account: String,
     val to: List<String>,
