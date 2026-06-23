@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -915,7 +916,11 @@ fun MessageScreen(vm: MailViewModel, account: String, id: String, folder: String
                                     }
                                 }
                             }
-                            EmailWebView(body.html, showImages, dark, Modifier.fillMaxWidth().weight(1f))
+                            // 用 Box 承载 weight,AndroidView 用 fillMaxSize 拿到确定约束。
+                            // 直接给 AndroidView 加 weight 时,WebView 内部滚动会被重测成高度 0 → 正文变空白。
+                            Box(Modifier.fillMaxWidth().weight(1f)) {
+                                EmailWebView(body.html, showImages, dark, Modifier.fillMaxSize())
+                            }
                         }
                     } else {
                         SelectionContainer(
@@ -983,11 +988,30 @@ private fun AttachmentsSection(vm: MailViewModel, account: String, id: String, f
     }
     val items = list
     if (items.isNullOrEmpty()) return  // 加载中或无附件 → 不显示附件区
-    Spacer(Modifier.height(20.dp))
-    Text("附件", fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(8.dp))
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items.forEach { ReceivedAttachmentChip(vm, account, id, folder, it) }
+    var expanded by remember(id) { mutableStateOf(false) }  // 默认折叠,把空间留给正文
+    Spacer(Modifier.height(12.dp))
+    Row(
+        Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.AttachFile, null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(6.dp))
+        Text("附件(${items.size})", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Icon(
+            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = if (expanded) "收起附件" else "展开附件",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (expanded) {
+        Spacer(Modifier.height(8.dp))
+        // 限定最大高度 + 内部滚动:附件再多也不会撑爆头部、把正文(WebView)挤成 0 高度变空白。
+        Column(
+            Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items.forEach { ReceivedAttachmentChip(vm, account, id, folder, it) }
+        }
     }
 }
 
