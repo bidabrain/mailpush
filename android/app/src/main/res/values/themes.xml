@@ -1,0 +1,7 @@
+<resources>
+    <!-- 启动主题(Compose 绘制前)。Compose 内的 MaterialTheme 负责实际配色与深色模式。 -->
+    <style name="Theme.Melonmail" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

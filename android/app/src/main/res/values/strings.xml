@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Melon Mail</string>
+    <string name="notification_channel_mail">新邮件</string>
+    <string name="notification_channel_mail_desc">收到新邮件时的推送通知</string>
+</resources>

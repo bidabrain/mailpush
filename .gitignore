@@ -1,0 +1,33 @@
+# ============ 本地测试 / 密钥 / 运行时状态:绝不 push ============
+# compose 的 .env(含本机路径、ACCOUNTS 等)
+.env
+# 运行时 config/ 与 data/ 目录(含 config.toml、密钥、himalaya 可写状态)。
+# 注意:必须锚定到具体位置,不能写裸 `data/`——否则会误伤 android 的 data 源码包
+# (android/app/src/main/java/com/melonmail/app/data/)。
+/config/
+/data/
+/server/config/
+/server/data/
+# 单独的密钥文件兜底
+*.pass
+service-account.json
+google-services.json
+device-token
+api-token
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+
+# ============ Android(P3 用)============
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/google-services.json
+
+# ============ 杂项 ============
+.DS_Store
+# 本地开发续接用的决策/进度记录,不进 Git
+PROJECT-MEMORY.md

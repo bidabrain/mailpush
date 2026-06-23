@@ -1,0 +1,6 @@
+# 密钥/配置/状态都不进版本库
+.env
+config/
+data/
+__pycache__/
+*.pyc

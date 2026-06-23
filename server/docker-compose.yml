@@ -1,0 +1,45 @@
+# mailpush —— 两个 service 共用同一镜像(mailpush:latest),靠 command 区分。
+# 两者不互相通信。
+#
+# 目录假设(ZimaOS 设计布局):
+#   /DATA/AppData/mailpush/
+#   ├── src/      <- 本仓库 server/ 内容(compose 在这里执行)
+#   ├── config/   <- config.toml / service-account.json / device-token / api-token / secrets/
+#   └── data/     <- himalaya/mirador 可写状态(自动创建)
+# 卷目录可通过 .env 切换(默认是 ZimaOS 布局):
+#   CONFIG_DIR  默认 ../config   DATA_DIR 默认 ../data   (相对 compose 所在目录)
+# 本机测试:在 .env 里设 CONFIG_DIR=./config  DATA_DIR=./data,
+#          把配置放到 server/config、server/data(已被 .gitignore 忽略,不会 push)。
+
+services:
+  mail-watch:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}   # 本地 build 前:export APP_VERSION=$(cat ../VERSION)
+    image: mailpush:latest
+    container_name: mail-watch
+    restart: always
+    init: true
+    env_file: .env
+    command: ["/app/watch-entrypoint.sh"]
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data
+
+  mail-api:
+    build:                        # 与 mail-watch 同 build,compose 只构建一次镜像
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    image: mailpush:latest
+    container_name: mail-api
+    restart: always
+    init: true
+    env_file: .env
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8099"]
+    ports:
+      - "8099:8099"
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data

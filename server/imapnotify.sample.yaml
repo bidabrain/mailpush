@@ -1,0 +1,97 @@
+# mailpush · goimapnotify(监听)配置 —— 给 mail-watch 用(IMAP IDLE → onNewMail → push-fcm.py)。
+# 复制为 /config/imapnotify.yaml 并改成你的账号。
+#
+# 与 himalaya 的 config.toml 各自独立,但引用【同一个】密钥文件 /config/secrets/*.pass。
+# onNewMail 只带账号名(goimapnotify 不传 sender/subject);push-fcm.py 再用 himalaya
+# 抓最新一封补全 sender/subject,并按 last-seen 去重(含启动首触发)。
+#
+# Gmail:host=imap.gmail.com,port=993,tls=true 且 starttls=false(993 直连 TLS),
+#        username=完整邮箱,passwordCMD 输出 App Password。
+
+configurations:
+  - host: imap.gmail.com
+    port: 993
+    tls: true
+    tlsOptions:
+      starttls: false
+    alias: gmail
+    username: you@gmail.com
+    passwordCMD: "cat /config/secrets/gmail.pass"
+    # 启动时也会触发一次 onNewMail —— push-fcm.py 用 last-seen 抑制误推。
+    onNewMail: "/app/push-fcm.py gmail"
+    onNewMailPost: SKIP
+    boxes:
+      - mailbox: INBOX
+        onNewMail: "/app/push-fcm.py gmail"
+        onNewMailPost: SKIP
+
+  # 账号 2/3:复制上面整块,改 alias/username/passwordCMD,并把 onNewMail 的参数改成对应账号名
+  # (账号名要和 himalaya config.toml 的 [accounts.<name>] 一致,push-fcm.py 用它抓最新信)。
+  # - host: imap.fastmail.com
+  #   port: 993
+  #   tls: true
+  #   tlsOptions:
+  #     starttls: false
+  #   alias: work
+  #   username: you@work.com
+  #   passwordCMD: "cat /config/secrets/work.pass"
+  #   onNewMail: "/app/push-fcm.py work"
+  #   onNewMailPost: SKIP
+  #   boxes:
+  #     - mailbox: INBOX
+  #       onNewMail: "/app/push-fcm.py work"
+  #       onNewMailPost: SKIP
+
+  # 例(Yahoo Mail)—— passwordCMD 用 Yahoo 应用专用密码;alias/onNewMail 参数要与
+  # config.toml 的账号名 yahoo 一致:
+  # - host: imap.mail.yahoo.com
+  #   port: 993
+  #   tls: true
+  #   tlsOptions:
+  #     starttls: false
+  #   alias: yahoo
+  #   username: you@yahoo.com
+  #   passwordCMD: "cat /config/secrets/yahoo.pass"
+  #   onNewMail: "/app/push-fcm.py yahoo"
+  #   onNewMailPost: SKIP
+  #   boxes:
+  #     - mailbox: INBOX
+  #       onNewMail: "/app/push-fcm.py yahoo"
+  #       onNewMailPost: SKIP
+
+  # 例(126 邮箱 / 网易)—— passwordCMD 用网易「客户端授权码」(非登录密码);
+  #   alias/onNewMail 参数要与 config.toml 的账号名 netease 一致。
+  # ⚠️ 网易坑:IMAP 不发 IMAP ID(RFC 2971)会被拒「Unsafe Login」。若 goimapnotify
+  #   连 126 报此错,即缺 IMAP ID,落地时核实其是否支持发 ID。
+  # - host: imap.126.com
+  #   port: 993
+  #   tls: true
+  #   tlsOptions:
+  #     starttls: false
+  #   alias: netease
+  #   username: you@126.com
+  #   passwordCMD: "cat /config/secrets/netease.pass"
+  #   onNewMail: "/app/push-fcm.py netease"
+  #   onNewMailPost: SKIP
+  #   boxes:
+  #     - mailbox: INBOX
+  #       onNewMail: "/app/push-fcm.py netease"
+  #       onNewMailPost: SKIP
+
+  # 例(Outlook / Microsoft 365 / Hotmail)—— IMAP 监听走 outlook.office365.com:993 直连 TLS。
+  # ⚠️⚠️ 微软已对个人 Outlook.com / 多数 M365 停用 Basic Auth,强制 OAuth2;goimapnotify 用
+  #   passwordCMD 的密码方式很可能登录失败。接 Outlook 前先确认账户仍允许 Basic Auth(详见 config.sample.toml)。
+  # - host: outlook.office365.com
+  #   port: 993
+  #   tls: true
+  #   tlsOptions:
+  #     starttls: false
+  #   alias: outlook
+  #   username: you@outlook.com
+  #   passwordCMD: "cat /config/secrets/outlook.pass"
+  #   onNewMail: "/app/push-fcm.py outlook"
+  #   onNewMailPost: SKIP
+  #   boxes:
+  #     - mailbox: INBOX
+  #       onNewMail: "/app/push-fcm.py outlook"
+  #       onNewMailPost: SKIP

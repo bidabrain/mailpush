@@ -1,0 +1,7 @@
+# mailpush server (方案A: FastAPI 包 himalaya CLI)
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.35
+firebase-admin>=6.5,<7
+pydantic>=2.7,<3
+email-validator>=2,<3       # models.py 的 EmailStr 需要它,否则 mail-api 启动即崩
+python-multipart>=0.0.9     # /send 的 multipart(Form/File/UploadFile)需要它

@@ -1,0 +1,33 @@
+# 目标机部署用(从 Docker Hub 拉镜像,不本地 build)。
+# 用法见 server/README 的「发布到 Docker Hub + 异机部署」。
+#
+# 镜像名由环境变量 MAILPUSH_IMAGE 提供(在 .env 里设 MAILPUSH_IMAGE=youruser/mailpush:latest),
+# 这样换版本/换仓库不用改本文件。
+#
+# 目录假设(ZimaOS 布局):compose 放在 /DATA/AppData/mailpush/src/,
+# 配置在 ../config,可写状态在 ../data(与本机开发一致)。
+
+services:
+  mail-watch:
+    image: ${MAILPUSH_IMAGE:-youruser/mailpush:latest}
+    container_name: mail-watch
+    restart: always
+    init: true
+    env_file: .env
+    command: ["/app/watch-entrypoint.sh"]
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data
+
+  mail-api:
+    image: ${MAILPUSH_IMAGE:-youruser/mailpush:latest}
+    container_name: mail-api
+    restart: always
+    init: true
+    env_file: .env
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8099"]
+    ports:
+      - "8099:8099"
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data
