@@ -39,6 +39,7 @@
 ## 功能
 
 - 多账号收件箱 + **统一收件箱**(跨账号合并,各账户**并发拉取**)
+- **多种邮箱**:Gmail / Yahoo / 网易 163·126 等用应用专用密码;**Outlook / Microsoft 365 / Hotmail 走 OAuth2**(微软已停用密码登录,见快速上手)
 - **未读数**:统一收件箱顶部显示总未读;账户列表每个账户显示各自未读(服务端 IMAP `SEARCH UNSEEN` 全量统计)
 - **查看已发邮件**(自动探测各账号的「已发」文件夹,收件箱顶部一键切换)
 - **置顶(pin)邮件**:右滑置顶,固定在收件箱与统一收件箱顶部;置顶内容单独缓存,不被自动清理;邮件在服务器端被删或取消置顶时自动移除
@@ -92,6 +93,21 @@ docker compose -f docker-compose.dist.yml up -d
 - **自己构建服务端**:`docker compose up -d --build`,或 `buildx --push` 发到自己的 Docker Hub,见 `server/README.md`。
 - ⚠️ **上线前务必读「安全」**:API(8099)要放 HTTPS 之后,管理后台(8098)只能内网。
 
+### 接入 Outlook / Microsoft 365 / Hotmail(OAuth2,不是密码)
+
+微软已对 Outlook.com 个人账户与多数 M365 **停用密码登录(Basic Auth)** —— 没有"应用专用密码"这条路,**只能走 OAuth2**。Gmail / Yahoo / 网易等不受影响,仍用上面的 `.pass`;只有微软账户要多做下面这套(一次性,约 10 分钟):
+
+1. **Azure 免费注册一个应用**:用那个 Outlook 邮箱登录 [entra.microsoft.com](https://entra.microsoft.com) → *App registrations → New registration*:
+   - 账户类型选**含「个人 Microsoft 账户」**的那项(outlook.com 个人号必需);
+   - *Authentication* → **Allow public client flows = Yes**(设备码流需要);
+   - *API permissions* 加**委托(Delegated)**权限:`IMAP.AccessAsUser.All`、`SMTP.Send`、`offline_access`;
+   - 记下 **Application (client) ID**(**不要**建 client secret)。
+2. **在内网管理后台授权**(最省事):浏览器开 `http://<内网IP>:8098` → 「OAuth」区填账号名(如 `outlook`)+ 上面的 client_id → 保存 → 点「授权」→ 按提示在浏览器输设备码、用 Outlook 账户登录同意。凭据会自动存到 `/data/oauth/`(refresh token 后续自动静默刷新)。
+3. **加账号块**:`config.toml` 与 `imapnotify.yaml` 各加一个 Outlook 账号(照两个 `*.sample` 文件里的 Outlook 段:`auth.type = "oauth2"` / `xoauth2: true`,`auth.cmd` 与 `passwordCMD` 都调 `oauth_token.py`),重启 `mail-api` 与 `mail-watch` 即生效。
+   - ⚠️ **邮箱地址必须填真实域名**:个人号可能是 `@live.com` / `@hotmail.com` / `@outlook.com` 任一;域名写错会报 `User is authenticated but not connected`(OAuth 授权能成功、token 也有效,但 IMAP 按错地址找不到邮箱)。`host` 统一是 `outlook.office365.com`,只地址要对。
+
+安卓 app **无需任何改动** —— Outlook 只是多一个账号。详细 Azure 步骤与排错见 [`server/README.md`](server/README.md#接入-outlook--microsoft-365oauth2)。
+
 详细说明见 [`server/README.md`](server/README.md) 与 [`android/README.md`](android/README.md)。
 
 ## 版本控制
@@ -114,6 +130,13 @@ docker compose -f docker-compose.dist.yml up -d
 **升版本**:改 `VERSION` 一个文件 → 重新构建 app 与镜像即可。
 
 ## 变更日志
+
+### 0.2.2
+- **接入 Outlook / Microsoft 365 / Hotmail(OAuth2 / XOAUTH2)**:微软停用密码登录后唯一可行路径。
+  - 新增 `app/oauth.py`(MSAL 设备码授权 + 静默刷新,`flock` 防两容器并发)、`oauth_token.py`(输出裸 access token,供 config 的 `auth.cmd` / imapnotify 的 `passwordCMD`)、`oauth_enroll.py`(CLI 一次性授权);
+  - `imap_pool`(收/读)与 `mailsend`(发信)增加 `auth.type=oauth2` 分支走 SASL `XOAUTH2`;监听端 goimapnotify 用 `xoauth2: true` 原生支持;
+  - **内网管理后台新增「OAuth」区**:填 client_id、点「授权」走设备码流(无需 SSH 进容器);凭据存可写的 `/data/oauth/`;
+  - **现有密码账户零改动**(Gmail/Yahoo/网易仍 `auth.type=password`);安卓端零改动。
 
 ### 0.2.0
 - **收信引擎从 himalaya(Rust CLI)切换为 Python `imaplib` 持久连接池**(`server/app/imap_pool.py` + `imap_client.py`)。动机与收益:

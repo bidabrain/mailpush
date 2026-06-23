@@ -1,0 +1,9 @@
+{
+  "_comment": "通常【不用手动建这个文件】——用内网管理后台(:8098)的 OAuth 区填 client_id + 点授权即可,后台会自动写到 /data/oauth/<账号名>.json。仅当你想手动配置时:复制为 /data/oauth/<账号名>.json(如 outlook.json)。client_id = Azure 应用的 Application (client) ID;authority/scopes 不填用微软默认值(见 app/oauth.py)。",
+  "client_id": "在此填你的 Azure Application (client) ID",
+  "authority": "https://login.microsoftonline.com/common",
+  "scopes": [
+    "https://outlook.office.com/IMAP.AccessAsUser.All",
+    "https://outlook.office.com/SMTP.Send"
+  ]
+}

@@ -28,7 +28,7 @@
 | 发信 | Python **`smtplib`**(直连 SMTP,不碰 IMAP) | `app/mailsend.py` |
 | 监听 | goimapnotify(Go,无 semver tag) | Dockerfile `ARG GOIMAPNOTIFY_VERSION`(伪版本含 commit) |
 | API | Python FastAPI(bearer 鉴权) | `app/api.py` |
-| 认证 | Gmail App Password 等(各 provider 的应用专用密码/授权码) | config 的 `auth.cmd` 读 `/config/secrets/*.pass` |
+| 认证 | 密码类(Gmail/Yahoo/网易的应用专用密码/授权码);**Outlook/M365 走 OAuth2(XOAUTH2)** | 密码:config 的 `auth.cmd` 读 `/config/secrets/*.pass`;OAuth:`auth.type=oauth2` + MSAL(`app/oauth.py`) |
 | 推送 | FCM HTTP v1 + Firebase Admin SDK,data message + priority high | `push-fcm.py` |
 
 > `config.toml` 仍沿用 himalaya v1 的 schema(`accounts.<name>.backend.*` 收信 / `message.send.backend.*` 发信);
@@ -47,6 +47,8 @@
 │   └── secrets/
 │       └── gmail.pass        # Gmail App Password(16 位,收发共用)
 └── data/                     # 可写状态:附件缓存 / push 去重 last-seen / device-tokens.json(自动创建)
+    └── oauth/                # Outlook 等 OAuth2 账号:<account>.json(client_id)+ <account>.cache.bin(token,会轮换)
+                              #   由管理后台或 oauth_enroll.py 写;两容器共享、可写,故放 /data 而非只读的 /config
 ```
 
 compose 的卷用相对路径 `../config`、`../data`(相对 `src/`),正好对应上面布局。
@@ -243,6 +245,62 @@ http://<服务器内网IP>:8098      # 用管理密码登录
 - **推送设备绑定**:FCM 推送 token 记录其注册所用的 app token;**删 app token 会连带删除其名下推送设备** → 丢设备一键同时断「读信 + 推送」(否则旧 FCM token 仍会把发件人/主题推过去)。后台「推送设备」区也可单删/清空;首次从旧版升级时,旧的无归属设备显示「未关联·旧」,点「清空所有推送设备」一次,有效设备下次开 app 会带归属重新注册。
 - 鉴权来源:`require_auth` 接受后台管理的多 token(`/data/app-tokens.json`),并**兼容**旧的单 `/config/api-token`。默认不再预设固定 token。
 - ⚠️ **mail-admin 只能内网**:别给它配 Cloudflare Tunnel、别在路由器转发 8098。只想本机访问:compose 端口写 `127.0.0.1:8098:8098`。
+
+## 接入 Outlook / Microsoft 365(OAuth2)
+
+微软已对 Outlook.com 个人账户与多数 M365 **停用 Basic Auth(密码/应用专用密码)**,IMAP/SMTP **只能 OAuth2**。本服务用 **MSAL 设备码流**:终端/网页给一个 URL + 设备码,你在任意设备的浏览器登录同意即可,**服务器无需开浏览器或回调端口**。Gmail/Yahoo/网易等密码类账户不受影响。
+
+### 1) Azure 注册应用(一次性,免费,约 10 分钟)
+
+用那个 Outlook 邮箱登录 [entra.microsoft.com](https://entra.microsoft.com)(个人号可能需点一下创建免费目录)→ *App registrations → New registration*:
+
+- **Supported account types**:选**含「个人 Microsoft 账户」**的那项(outlook.com 个人号必需,否则登不进);
+- 注册后记下 **Application (client) ID**;**不要**建 client secret(设备码流是公共客户端);
+- *Authentication* → **Allow public client flows = Yes**(设备码流需要,漏开会报错);
+- *API permissions → Add a permission* → 加**委托(Delegated)**权限:
+  `https://outlook.office.com/IMAP.AccessAsUser.All`、`https://outlook.office.com/SMTP.Send`、`offline_access`(拿 refresh token)、`openid`。
+
+> 卡点 90% 在这步:账户类型没勾「个人账户」→ 登不进;没开 public client flows → 设备码流报错;没加 `offline_access` → 拿不到 refresh token、过一阵就要重新授权。
+
+### 2) 授权(把 refresh token 存进 `/data/oauth/`)
+
+**推荐:内网管理后台**(无需进容器)——浏览器开 `http://<内网IP>:8098` →「OAuth」区:
+
+1. 填**账号名**(如 `outlook`,要和后面 config 里的 `[accounts.outlook]` 一致)+ **client_id** → 保存;
+2. 点「**授权**」→ 页面显示验证 URL + 设备码 → 浏览器打开、输码、用 Outlook 账户登录同意;
+3. 后台轮询到完成即提示成功,凭据写入 `/data/oauth/<账号名>.cache.bin`。
+
+或 **CLI**(等效):
+
+```bash
+# 先建 client_id 配置(后台会自动建;手动则:)
+mkdir -p <data>/oauth && printf '{"client_id":"<你的-client-id>"}' > <data>/oauth/outlook.json
+docker exec -it mail-api python /app/oauth_enroll.py outlook   # 终端给 URL+码,浏览器同意
+```
+
+验证拿 token(任意时刻可跑,排错第一步):
+
+```bash
+docker compose exec mail-api python /app/oauth_token.py outlook   # 打印一长串 = OK;报错则按提示看真因
+```
+
+### 3) 在 config 里加 Outlook 账号
+
+`config.toml`(收/发)与 `imapnotify.yaml`(监听)各加一块,照各自 `*.sample` 文件的 Outlook 段:
+
+- `config.toml`:`backend.auth.type = "oauth2"` + `backend.auth.cmd = "python /app/oauth_token.py outlook"`;SMTP 是 **587 + start-tls**(不是 465);
+- `imapnotify.yaml`:`xoauth2: true` + `passwordCMD: "python /app/oauth_token.py outlook"`(goimapnotify 收裸 token 自己拼 SASL);
+- 改完重启 `mail-api` 与 `mail-watch` 即生效。
+
+> ⚠️ **`email`/`login`/`username` 必须是真实邮箱地址**(个人号可能是 `@live.com`/`@hotmail.com`/`@outlook.com` 任一域)。
+> 域名写错时会报 **`User is authenticated but not connected`**:OAuth 授权成功、token 也有效,但 IMAP 后端按这个地址找不到邮箱。`host` 统一 `outlook.office365.com`,只地址要对。
+
+### 工作原理 / 排错速查
+
+- 三处都调**同一个** `oauth_token.py`,它输出**裸 access token**;`imap_pool`/`mailsend` 自己按 XOAUTH2 拼 SASL 串,goimapnotify 用 `username` 自己拼。
+- access token ~1h 过期,但 IMAP/IDLE 长连接保持认证态、过期不掉已建连接;只在(重)连时取新 token,`oauth_token.py` 每次吐新鲜的。
+- token 缓存在 `/data/oauth`(两容器共享),刷新时 `flock` 防并发写坏。
+- 排错:`oauth_token.py` 打不出 token → OAuth 侧(未授权/scope/网络),错误在它的 stderr;能打出 token 但 app 连不上 → XOAUTH2/地址侧(多半是上面那条地址域名写错)。
 
 ## 暴露给手机(mail-api)
 

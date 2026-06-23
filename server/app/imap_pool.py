@@ -49,6 +49,7 @@ class ImapConfig:
     login: str
     auth_cmd: str | None
     auth_passwd: str | None
+    auth_type: str = "password"  # password / oauth2;oauth2 时 secret() 返回的是 access token
 
     def password(self) -> str:
         if self.auth_cmd:
@@ -61,9 +62,17 @@ class ImapConfig:
             pw = out.stdout.strip()
             if pw:
                 return pw
+            if self.auth_passwd:
+                return self.auth_passwd
+            # auth.cmd 无输出(oauth2 刷新失败常走到这):把退出码 + stderr 抛出来,
+            # 否则真实原因被吞,只剩"连不上"。OAuth 的真因(未授权/scope/网络)都在 stderr。
+            err = (out.stderr or "").strip()
+            raise ImapError(
+                f"auth.cmd 无输出(exit={out.returncode}): {err or '(stderr 为空)'}"
+            )
         if self.auth_passwd:
             return self.auth_passwd
-        raise ImapError("缺少密码(auth.cmd 无输出且无 auth.passwd)")
+        raise ImapError("缺少密码(无 auth.cmd 也无 auth.passwd)")
 
 
 def load_config(account: str) -> ImapConfig:
@@ -98,6 +107,7 @@ def load_config(account: str) -> ImapConfig:
         login=login,
         auth_cmd=auth.get("cmd"),
         auth_passwd=auth.get("passwd") or auth.get("password") or auth.get("raw"),
+        auth_type=(auth.get("type") or "password").lower(),
     )
 
 
@@ -134,9 +144,18 @@ class _Pool:
             conn.sock.settimeout(OP_TIMEOUT)
         except OSError:
             pass
-        conn.login(cfg.login, cfg.password())
+        if cfg.auth_type == "oauth2":
+            self._xoauth2(conn, cfg.login, cfg.password())  # password() 此时返回 access token
+        else:
+            conn.login(cfg.login, cfg.password())
         self._send_id(conn)
         return conn
+
+    @staticmethod
+    def _xoauth2(conn: imaplib.IMAP4, user: str, token: str) -> None:
+        """用 OAuth2 access token 走 SASL XOAUTH2 登录(imaplib 自己 base64)。"""
+        auth = f"user={user}\x01auth=Bearer {token}\x01\x01"
+        conn.authenticate("XOAUTH2", lambda _challenge=None: auth.encode())
 
     @staticmethod
     def _send_id(conn: imaplib.IMAP4) -> None:

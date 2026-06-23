@@ -5,3 +5,4 @@ firebase-admin>=6.5,<7
 pydantic>=2.7,<3
 email-validator>=2,<3       # models.py 的 EmailStr 需要它,否则 mail-api 启动即崩
 python-multipart>=0.0.9     # /send 的 multipart(Form/File/UploadFile)需要它
+msal>=1.28,<2               # OAuth2(Outlook 等)设备码授权 + 静默刷新(oauth.py)

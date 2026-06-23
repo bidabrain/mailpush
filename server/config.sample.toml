@@ -1,12 +1,13 @@
-# mailpush · himalaya(引擎)配置 —— 给 mail-api 用(读列表/读正文/发信/回信)。
+# mailpush · 账号收发配置 —— 给 mail-api 用(读列表/读正文/发信/回信)。
 # 复制为 /config/config.toml 并改成你的账号。
 #
-# ⚠️ 重要:himalaya v1.2.0 与 mirador 的配置 schema【不一样】(himalaya v1 vs himalaya v2)。
-#   - 本文件是 himalaya v1.2.0 格式(backend.type / email / auth.cmd)。
-#   - mirador 监听用【另一份】mirador.toml(见 mirador.sample.toml,格式不同)。
-#   两份文件引用【同一个密钥文件】/config/secrets/gmail.pass,密钥不重复。
+# schema 沿用 himalaya v1 的 TOML 结构(accounts.<name>.backend.* / message.send.backend.*),
+# 但引擎早已换成纯 Python:收/读走 imaplib 连接池(imap_pool.py / imap_client.py),
+# 发信走 smtplib(mailsend.py)。himalaya / mirador 均已移除。
+# 推送监听是【另一份】配置 imapnotify.yaml(goimapnotify,见 imapnotify.sample.yaml),
+# 与本文件各自独立,但引用【同一个】密钥文件 /config/secrets/*.pass。
 #
-# ⚠️ VERIFY:himalaya v1.2.0 每个账号必须有 email 字段(否则报 missing field `email`)。
+# email 字段:建议填(用作发信 From 地址);省略时 mailsend 会回退用 backend.login。
 
 # ============================================================
 # 账号 1:Gmail(App Password。先开 2FA 再生成 16 位码,IMAP/SMTP 共用)
@@ -110,12 +111,19 @@ message.send.save-copy = false
 # message.send.backend.auth.type = "password"
 # message.send.backend.auth.cmd = "cat /config/secrets/netease.pass"
 
-# 例(Outlook / Microsoft 365 / Hotmail)
-# ⚠️⚠️ 重大限制:微软已对 Outlook.com 个人账户和多数 M365 账户【停用 Basic Auth】(密码/应用密码
-#   登录 IMAP/SMTP),改强制 OAuth2。但本项目 Dockerfile 的 himalaya 只编了 imap,smtp(无 oauth2),
-#   所以密码方式很可能直接登录失败。要接 Outlook 需先确认你的账户仍允许 Basic Auth(或老 tenant 临时开了),
-#   否则得给 himalaya 加 oauth2 feature 并配 OAuth2 流程——这是另一摊工作,落地前先核实可行性。
-# ⚠️ SMTP 是 587 + STARTTLS(不是 465 直连 TLS),encryption.type 用 "start-tls"。
+# 例(Outlook / Microsoft 365 / Hotmail)—— 走 OAuth2(XOAUTH2),不是密码
+# ⚠️⚠️ 微软已对 Outlook.com 个人账户和多数 M365【停用 Basic Auth】,只能 OAuth2。本项目支持:
+#   1) 在 Azure(entra.microsoft.com)免费注册一个应用,拿 client_id(账户类型勾"个人 Microsoft 账户";
+#      开 Allow public client flows;加委托权限 IMAP.AccessAsUser.All / SMTP.Send);
+#   2) 【最省事】在内网管理后台(:8098)的「OAuth」区:填账号名(outlook)+ client_id → 点「授权」→
+#      按页面提示在浏览器输入设备码、用 Outlook 账户登录同意,即完成(后台自动存好凭据到 /data/oauth/)。
+#      (也可手动:建 /data/oauth/outlook.json 写 {"client_id":...},再 docker exec -it mail-api python /app/oauth_enroll.py outlook)
+#   3) 下面这样配账号(auth.type=oauth2,cmd 调 oauth_token.py 输出 access token);imapnotify.yaml 同账号见样例。
+#   详见仓库根 README。
+# ⚠️ SMTP 是 587 + STARTTLS(encryption.type = "start-tls"),IMAP 是 993 TLS。
+# ⚠️⚠️ email / login 必须是【真实邮箱地址】(个人号可能是 @live.com / @hotmail.com / @outlook.com 任一域)。
+#   写错域名时 OAuth 能授权成功、token 也有效,但 IMAP 会报 "User is authenticated but not connected"
+#   (认证放行了、但后端按这个地址找不到邮箱)。host 仍统一 outlook.office365.com,只地址要对。
 # ------------------------------------------------------------
 # [accounts.outlook]
 # email = "you@outlook.com"
@@ -124,12 +132,12 @@ message.send.save-copy = false
 # backend.port = 993
 # backend.encryption.type = "tls"
 # backend.login = "you@outlook.com"
-# backend.auth.type = "password"
-# backend.auth.cmd = "cat /config/secrets/outlook.pass"
+# backend.auth.type = "oauth2"
+# backend.auth.cmd = "python /app/oauth_token.py outlook"
 # message.send.backend.type = "smtp"
 # message.send.backend.host = "smtp.office365.com"
 # message.send.backend.port = 587
 # message.send.backend.encryption.type = "start-tls"
 # message.send.backend.login = "you@outlook.com"
-# message.send.backend.auth.type = "password"
-# message.send.backend.auth.cmd = "cat /config/secrets/outlook.pass"
+# message.send.backend.auth.type = "oauth2"
+# message.send.backend.auth.cmd = "python /app/oauth_token.py outlook"

@@ -20,6 +20,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 import apptokens
 import devicetokens
 
+try:
+    import oauth  # 需要 msal;未装则后台隐藏 OAuth 区(不影响其他功能)
+except Exception:  # noqa: BLE001
+    oauth = None
+
 VERSION = os.environ.get("MAILPUSH_VERSION", "dev")
 ADMIN_PASS_FILE = os.environ.get("ADMIN_PASSWORD_FILE", "/config/secrets/admin.pass")
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.toml")
@@ -154,6 +159,44 @@ def _dashboard() -> HTMLResponse:
     if not drows:
         drows = "<tr><td colspan=3 class=muted>暂无已注册推送设备。</td></tr>"
 
+    # ---- OAuth(Outlook 等)----
+    oauth_html = ""
+    if oauth is not None:
+        orows = ""
+        for a in oauth.list_accounts():
+            cid = a["client_id"]
+            cidmask = cid if len(cid) <= 12 else f"{cid[:8]}…{cid[-4:]}"
+            st = "已授权 ✅" if a["enrolled"] else "未授权"
+            orows += (
+                "<tr>"
+                f"<td>{html.escape(a['account'])}</td>"
+                f"<td><span class=muted>{html.escape(cidmask)}</span><br><span class=muted>{st}</span></td>"
+                "<td>"
+                "<form method=post action=/oauth/enroll style=display:inline>"
+                f"<input type=hidden name=account value='{html.escape(a['account'])}'>"
+                "<button type=submit>授权</button></form> "
+                "<form method=post action=/oauth/delete style=display:inline "
+                "onsubmit=\"return confirm('删除此 OAuth 账号配置?')\">"
+                f"<input type=hidden name=account value='{html.escape(a['account'])}'>"
+                "<button class=danger type=submit>删除</button></form>"
+                "</td></tr>"
+            )
+        if not orows:
+            orows = "<tr><td colspan=3 class=muted>还没有 OAuth 账号。下面填 client_id 添加。</td></tr>"
+        oauth_html = (
+            "<h2>OAuth(Outlook 等)</h2>"
+            "<div class=card><table>"
+            "<tr><td><b>账号</b></td><td><b>client_id / 状态</b></td><td></td></tr>"
+            f"{orows}</table></div>"
+            "<form method=post action=/oauth/save class=card>"
+            "<input type=text name=account placeholder='账号名(同 config.toml,如 outlook)'> "
+            "<input type=text name=client_id placeholder='Azure Application (client) ID' style=min-width:260px> "
+            "<button type=submit>保存</button>"
+            "<div class=muted style=margin-top:8px>保存后点该账号「授权」→ 按提示在浏览器登录同意。"
+            "仍需在 config.toml / imapnotify.yaml 加该账号块(见 sample,auth.type=oauth2)。</div>"
+            "</form>"
+        )
+
     return _page(
         "<h1>mailpush 管理后台</h1>"
         "<p><a href=/logout>退出登录</a></p>"
@@ -185,6 +228,7 @@ def _dashboard() -> HTMLResponse:
         "onsubmit=\"return confirm('清空所有推送设备?有效设备下次打开 app 会自动重新注册')\">"
         "<button class=danger type=submit>清空所有推送设备</button></form>"
         "</div>"
+        + oauth_html
     )
 
 
@@ -252,3 +296,80 @@ def devices_clear(session: str | None = Cookie(default=None, alias=COOKIE)):
         return RedirectResponse("/", status_code=303)
     devicetokens.clear()
     return RedirectResponse("/", status_code=303)
+
+
+# ---------- OAuth ----------
+
+@app.post("/oauth/save")
+def oauth_save(
+    account: str = Form(""),
+    client_id: str = Form(""),
+    session: str | None = Cookie(default=None, alias=COOKIE),
+):
+    if not _authed(session):
+        return RedirectResponse("/", status_code=303)
+    if oauth is not None:
+        try:
+            oauth.save_config(account, client_id)
+        except Exception:  # noqa: BLE001 — 输入不合法等,忽略后回首页
+            pass
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/oauth/delete")
+def oauth_delete(account: str = Form(""), session: str | None = Cookie(default=None, alias=COOKIE)):
+    if not _authed(session):
+        return RedirectResponse("/", status_code=303)
+    if oauth is not None and account:
+        oauth.delete_account(account)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/oauth/enroll")
+def oauth_enroll_start(account: str = Form(""), session: str | None = Cookie(default=None, alias=COOKIE)):
+    if not _authed(session):
+        return RedirectResponse("/", status_code=303)
+    if oauth is not None and account:
+        try:
+            oauth.start_device_flow(account)
+        except Exception as exc:  # noqa: BLE001
+            oauth._set_flow(account, "error", str(exc))  # 让状态页显示原因
+    return RedirectResponse(f"/oauth/enroll?account={account}", status_code=303)
+
+
+@app.get("/oauth/enroll", response_class=HTMLResponse)
+def oauth_enroll_status(account: str = "", session: str | None = Cookie(default=None, alias=COOKIE)):
+    if not _authed(session):
+        return _login_page("")
+    st = oauth.flow_status(account) if oauth is not None else None
+    if not st:
+        return RedirectResponse("/", status_code=303)
+    status = st.get("status")
+    if status == "pending":
+        body = (
+            f"<h1>授权 {html.escape(account)}</h1>"
+            "<div class=card>"
+            f"<p>1. 浏览器打开:<a href='{html.escape(st['verification_uri'])}' target=_blank>{html.escape(st['verification_uri'])}</a></p>"
+            f"<p>2. 输入代码:<code style=font-size:22px>{html.escape(st['user_code'])}</code></p>"
+            "<p>3. 用要接入的 Outlook 账户登录并点「同意」。</p>"
+            "<p class=muted>本页每 4 秒自动刷新检测结果…</p>"
+            "</div>"
+        )
+        return HTMLResponse(
+            "<!doctype html><html><head><meta charset=utf-8>"
+            f"<meta http-equiv=refresh content='4; url=/oauth/enroll?account={html.escape(account)}'>"
+            f"{_STYLE}</head><body>{body}</body></html>"
+        )
+    if status == "success":
+        body = (
+            f"<h1>✅ {html.escape(account)} 授权成功</h1>"
+            "<div class=card>已拿到 refresh token。现在可在 config.toml 用 <code>auth.type=oauth2</code> 连这个账号。</div>"
+            "<p><a href=/>返回</a></p>"
+        )
+    else:
+        body = (
+            "<h1>❌ 授权失败</h1>"
+            f"<div class=card><span class=err>{html.escape(st.get('message', ''))}</span></div>"
+            "<p><a href=/>返回</a> · 可重新点「授权」再试</p>"
+        )
+    return _page(body)
