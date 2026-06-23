@@ -11,7 +11,7 @@ sender/subject)。本脚本用 imap_client 抓该账号 INBOX 最新一封取 se
 (避免 goimapnotify 启动时把已存在的旧信当新信)。
 
 注:本脚本是 goimapnotify 每来新信 fork 的短命进程,imap_pool 在此无法跨调用复用连接
-(每次推送新建一次连接;Gmail ~1s,KIAS 首连 ~53s,属后台行为可接受)。
+(每次推送新建一次连接;Gmail ~1s,做 rDNS 的邮箱首连可能数十秒,属后台行为可接受)。
 """
 import asyncio
 import os

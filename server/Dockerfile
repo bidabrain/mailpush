@@ -5,7 +5,7 @@
 #   stage runtime  : python + FastAPI,收/读/发全部走 Python(imaplib 连接池 + smtplib)
 #
 # 引擎演进:原本用 himalaya(Rust CLI)做收信引擎,已替换为 app/imap_pool.py + imap_client.py
-# (标准库 imaplib 持久连接池)。好处:KIAS 复用连接免每次 rDNS 53s;代码层发 IMAP ID 解锁
+# (标准库 imaplib 持久连接池)。好处:复用连接,免去对做反向 DNS 的邮箱每次新连接等数十秒;代码层发 IMAP ID 解锁
 # 网易 163/126 读信(himalaya v1.2.0 不支持,issue #656);去掉 Rust 编译,build ~20min → ~1min。
 # 详见仓库根 imap-pool-design.md 与 PROJECT-MEMORY.md。
 #

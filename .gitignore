@@ -33,3 +33,5 @@ android/app/google-services.json
 PROJECT-MEMORY.md
 # 内部改造设计稿(imaplib 连接池替换 himalaya),不进 Git
 imap-pool-design.md
+# 内部设计稿(OAuth2 接入 Outlook),不进 Git
+oauth2-design.md

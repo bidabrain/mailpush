@@ -22,7 +22,8 @@
 - **引擎**:Python `imaplib` **持久连接池**(读列表/正文/附件 + 生成回复转发模板)
   —— **0.2.0 起**取代原 himalaya CLI 后端(见下「变更日志」)
 - **发信**:Python smtplib(直连 SMTP,不碰 IMAP)
-- **API**:FastAPI(bearer 鉴权)
+- **API**:FastAPI(bearer 鉴权;**须置于 HTTPS 之后**)
+- **管理后台**:独立的内网 web 界面(密码登录,管理 app token + 看状态),**独立端口、仅限局域网**
 - **推送**:FCM HTTP v1 + Firebase Admin SDK(data message,多设备)
 - **客户端**:Kotlin + Jetpack Compose + Material 3
 
@@ -49,12 +50,49 @@
 - 详情页可展开看完整发件人/收件人地址
 - **离线缓存**:无网时可看已加载的收件箱与读过的正文;正文缓存有容量上限自动回收(置顶豁免)
 - FCM 推送,多设备自动注册(token 自动上报);点通知直达对应邮件
+- **内网管理后台**(独立端口):图形化**管理多个 app token**(每台设备一个);**删某 token 连带切断其推送设备**,丢设备一键同时断「读信 + 推送」;查看版本/运行状态、管理推送设备;app 端 token 输入框掩码显示
 
-## 快速开始
+## 快速上手(从零跑起来)
 
-1. **服务端**:见 [`server/README.md`](server/README.md) —— 准备 `config.toml` + 密钥,`docker compose up -d --build`;发布到 Docker Hub 后可在 ZimaOS 等机器 `image` 模式部署。
-2. **安卓端**:见 [`android/README.md`](android/README.md) —— 放 `google-services.json`(Firebase),Android Studio 构建;app 内填服务器地址 + API token。
-3. **Firebase**:服务端 `service-account.json` 与 安卓 `google-services.json` 须来自**同一个** Firebase 项目。
+> 服务端用**官方预构建镜像**免构建直接拉;只有安卓 app 需要你本地编译(因为要放你自己的 Firebase 配置)。
+
+**前置**:Docker + docker compose;编译 app 需 Android Studio 或 Android SDK(`./gradlew`);一个免费 **Firebase 项目**,从中拿两个文件——服务端发 FCM 用的 `service-account.json`、安卓 app 用的 `google-services.json`(**两者必须同一个 Firebase 项目**)。
+
+```bash
+# 1) 克隆
+git clone https://github.com/bidabrain/mailpush && cd mailpush
+
+# 2) 编译安卓 app(放入你自己的 google-services.json 覆盖占位文件)
+cp /path/to/google-services.json android/app/google-services.json
+( cd android && ./gradlew assembleDebug )      # 产物:android/app/build/outputs/apk/debug/app-debug.apk → 装到手机
+
+# 3) 服务端:准备配置 + 密钥(都放 server/config,已被 .gitignore 忽略)
+cd server
+mkdir -p config/secrets data
+cp .env.sample .env
+#   编辑 .env:取消注释 CONFIG_DIR=./config 与 DATA_DIR=./data(让配置落在 server/config、server/data)
+cp config.sample.toml     config/config.toml          # 改成你的账号(host/login/email)
+cp imapnotify.sample.yaml config/imapnotify.yaml      # 同样的账号(监听用)
+printf '邮箱应用专用密码' > config/secrets/gmail.pass   # 每个账号一个 .pass(名字与 config 里 auth.cmd 对应)
+printf '管理后台密码'    > config/secrets/admin.pass    # 内网管理后台登录用
+cp /path/to/service-account.json config/service-account.json   # Firebase 服务端密钥
+
+# 4) 拉官方镜像并运行(docker-compose.dist.yml 默认就指向 bidabrain/mailpush:latest)
+docker compose -f docker-compose.dist.yml pull
+docker compose -f docker-compose.dist.yml up -d
+
+# 5) 建 token → 连 app
+#   内网浏览器开 http://<服务器内网IP>:8098,用管理密码登录 → 给手机「新建 Token」
+#   app 设置里填:服务器地址 + 该 Token(地址生产环境务必走 HTTPS,见「安全」)
+```
+
+完成后:发封测试邮件,手机应收到 FCM 推送;点开能读正文、回信、发信。
+
+- **架构匹配**:官方镜像是 `linux/amd64`。arm64 机器(树莓派等)需自行 `buildx` 构建,详见 [`server/README.md`](server/README.md)。
+- **自己构建服务端**:`docker compose up -d --build`,或 `buildx --push` 发到自己的 Docker Hub,见 `server/README.md`。
+- ⚠️ **上线前务必读「安全」**:API(8099)要放 HTTPS 之后,管理后台(8098)只能内网。
+
+详细说明见 [`server/README.md`](server/README.md) 与 [`android/README.md`](android/README.md)。
 
 ## 版本控制
 
@@ -89,6 +127,12 @@
   - 统一/单账户**共享新鲜度**:统一刷过的账户点进去不再重复拉;`loadUnified` 防并发 + 新鲜度跳过;
   - 双击底部「统一」图标回到列表顶部;根页连按两次返回彻底退出;
   - 「已发」文件夹探测失败可自愈(不缓存 null,下次重试)。
+- **内网管理后台(mail-admin)+ 多 app token**:
+  - 新增独立容器 `mail-admin`(默认端口 8098,**仅限内网**),密码登录后可**新建/删除多个 app token**(每台设备一个,丢设备直接吊销该 token,无需改配置/全量轮换),并显示版本与运行状态;
+  - **推送设备与 app token 绑定**:FCM 推送 token 记录其注册时所用的 app token;后台**删 app token 会连带删除其名下推送设备** → 丢设备一键同时切断「读信」和「推送」(否则旧 FCM token 仍会把发件人/主题推到丢失设备);后台也可单删/清空推送设备;
+  - `require_auth` 接受后台管理的多 token,**兼容**旧的单 `/config/api-token`;**默认不再预设固定 token**(走后台管理);
+  - 关闭 FastAPI 自动文档(`/docs`、`/redoc`、`/openapi.json`),减少接口结构泄露;
+  - app 端「API Token」输入框改为掩码显示。
 - **himalaya 已从代码与镜像中移除。**
 
 ### 0.1.0
@@ -96,8 +140,15 @@
 
 ## 安全
 
-API 能读全部邮件、以你名义发信。**务必放在 Cloudflare Tunnel 之后 + 强 bearer token**,
-严禁裸暴露公网。凭据(邮箱密码、token、Firebase 私钥)只存服务器/本机,**不进 Git**(见 `.gitignore`)。
+凭据(邮箱密码、token、Firebase 私钥、管理密码)只存服务器/本机,**不进 Git**(见 `.gitignore`)。
+
+两个端口,安全要求**完全不同**,务必分清:
+
+- 🔒 **API(mail-api,默认 8099)必须放在 HTTPS 之后**。它能读全部邮件、以你名义发信,且 uvicorn 跑的是**明文 HTTP**——直接裸暴露公网会让 **bearer token 和邮件内容被明文嗅探**。用 **Cloudflare Tunnel**(提供 HTTPS + 出站连接)对外暴露,**严禁把 8099 经路由器端口转发直连公网**。token 用强随机值(后台生成的即是),走 HTTPS 传输。
+- 🚫 **管理后台(mail-admin,默认 8098)只能内网访问,绝不可暴露公网**。它能增删 token、看状态,是你的"钥匙串管理处"。**不要**给它配 Cloudflare Tunnel、**不要**在路由器上转发 8098。只想本机访问可在 compose 把端口写成 `127.0.0.1:8098:8098`。
+
+**多 token + 吊销**:给每台设备建独立 token;设备丢失时**内网登录后台删除该 token 即可**(即时生效,不影响其他设备),无需全量轮换。
+注意:后台仅内网 → 人在外面丢手机需回到局域网(或 VPN 回家)才能吊销。
 
 ## 状态
 

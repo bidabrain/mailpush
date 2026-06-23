@@ -43,3 +43,22 @@ services:
     volumes:
       - ${CONFIG_DIR:-../config}:/config:ro
       - ${DATA_DIR:-../data}:/data
+
+  # 管理后台 —— ⚠️ 仅内网:只映射到局域网,【不要】经 Cloudflare/路由器暴露公网。
+  # 想只让本机访问可把端口写成 "127.0.0.1:8098:8098"。
+  mail-admin:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    image: mailpush:latest
+    container_name: mail-admin
+    restart: always
+    init: true
+    env_file: .env
+    command: ["uvicorn", "admin:app", "--host", "0.0.0.0", "--port", "8098"]
+    ports:
+      - "${ADMIN_PORT:-8098}:8098"
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data

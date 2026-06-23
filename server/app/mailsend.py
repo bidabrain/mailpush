@@ -1,5 +1,5 @@
 """直连 SMTP 发信(替代 himalaya send,避免它无条件做 IMAP APPEND 存副本——
-Gmail 会串进收件箱、KIAS 会 APPENDUID 报错/超时)。
+Gmail 会串进收件箱、某些自建/机构 IMAP 会 APPENDUID 报错/超时)。
 
 从 config.toml 读账号的 message.send.backend.*(host/port/encryption/login/auth.cmd),
 只发原始 MIME,不碰 IMAP。"已发送"交给上游 SMTP 自动归档(Gmail/Outlook 会;

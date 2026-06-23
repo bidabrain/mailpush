@@ -1,11 +1,16 @@
 # mailpush · server 端
 
-自建邮件推送 + 收发服务的**服务端**。两条数据线、两个容器,共用一个镜像:
+自建邮件推送 + 收发服务的**服务端**。三个容器,共用一个镜像:
 
 - **推送线** `mail-watch`:`goimapnotify`(IMAP IDLE 监听)→ `onNewMail` → `push-fcm.py`(用 `imap_client` 抓最新一封补 sender/subject,再发 FCM HTTP v1)→ 安卓 app 弹通知。
-- **API 线** `mail-api`:`FastAPI`(`api.py`)收/读走 **Python `imaplib` 持久连接池**(`imap_pool.py` + `imap_client.py`),发信走 **`smtplib`**(`mailsend.py`),供手机读列表 / 读正文 / 发信 / 回信 / 转发 / 删除。
+- **API 线** `mail-api`(:8099):`FastAPI`(`api.py`)收/读走 **Python `imaplib` 持久连接池**(`imap_pool.py` + `imap_client.py`),发信走 **`smtplib`**(`mailsend.py`),供手机读列表 / 读正文 / 发信 / 回信 / 转发 / 删除。
+- **管理后台** `mail-admin`(:8098,**仅内网**):`admin.py`,密码登录,图形化管理 app token(新建/删除)+ 看版本/状态。
 
 手机不存任何邮箱凭据、不维持持久 IMAP 连接。整体设计见仓库根 `mail-push-relay-design.md` 与 `docker-design.md`。
+
+> ⚠️ **两个端口安全要求不同**:
+> - **mail-api(8099)能读全部邮件+发信,且是明文 HTTP → 必须置于 HTTPS(Cloudflare Tunnel)之后**,严禁路由器端口转发裸暴露公网。
+> - **mail-admin(8098)是 token 管理入口 → 只能内网,绝不可暴露公网**(不要给它配 Tunnel/端口转发;只想本机访问写 `127.0.0.1:8098:8098`)。
 
 > **0.2.0 起:收信引擎从 himalaya(Rust CLI)改为 Python `imaplib` 持久连接池。**
 > 收益:连接复用免去每次握手(对会做反向 DNS、新连接要等数十秒的 IMAP 服务器尤其明显);
@@ -46,7 +51,31 @@
 
 compose 的卷用相对路径 `../config`、`../data`(相对 `src/`),正好对应上面布局。
 
-## 部署(SSH + docker compose)
+## 直接用预构建镜像(最快,免构建)
+
+官方已发布镜像 **[`bidabrain/mailpush:latest`](https://hub.docker.com/r/bidabrain/mailpush)**(`linux/amd64`)。
+`docker-compose.dist.yml` 默认就指向它,所以**不用 build、不用设 `MAILPUSH_IMAGE`**,准备好配置直接拉:
+
+```bash
+mkdir -p /DATA/AppData/mailpush/{src,config/secrets,data}
+cd /DATA/AppData/mailpush/src
+# 传 docker-compose.dist.yml、.env.sample、config.sample.toml、imapnotify.sample.yaml 到这里
+cp .env.sample .env
+cp config.sample.toml     ../config/config.toml         # 改账号
+cp imapnotify.sample.yaml ../config/imapnotify.yaml     # 改账号
+printf '16位AppPassword' > ../config/secrets/gmail.pass
+cp /path/to/service-account.json ../config/service-account.json
+printf '管理后台密码'    > ../config/secrets/admin.pass    # 后台登录用
+
+docker compose -f docker-compose.dist.yml pull
+docker compose -f docker-compose.dist.yml up -d
+# 内网开 http://<内网IP>:8098 登录后台,给每台设备建 app token → 填进 app
+```
+
+> 非 amd64 机器(arm64 等)默认镜像跑不了,需按下方「发布到 Docker Hub」自己 `buildx` 构建,
+> 并在 `.env` 设 `MAILPUSH_IMAGE=youruser/mailpush:latest`。
+
+## 部署(SSH + docker compose,自己 build)
 
 ```bash
 # 1. 放代码
@@ -60,8 +89,10 @@ vi /DATA/AppData/mailpush/config/config.toml         # 改成你的账号(backen
 vi /DATA/AppData/mailpush/config/imapnotify.yaml     # 同样的账号(username/onNewMail 参数)
 printf '%s' '你的16位appcode' > /DATA/AppData/mailpush/config/secrets/gmail.pass
 cp /path/to/firebase-service-account.json /DATA/AppData/mailpush/config/service-account.json
-openssl rand -hex 32 > /DATA/AppData/mailpush/config/api-token
-cp .env.sample .env                                  # 一般无需改(默认 ZimaOS 布局)
+printf '管理后台密码' > /DATA/AppData/mailpush/config/secrets/admin.pass   # 后台登录用
+cp .env.sample .env                                  # dist 部署记得设 MAILPUSH_IMAGE
+# app token 不用在这里建:起服务后内网开 http://<内网IP>:8098 登录后台新建(每台设备一个)。
+# (可选·向后兼容:也可仍用单 token 文件 openssl rand -hex 32 > .../config/api-token)
 
 # 3. 构建并起容器(只编译 goimapnotify/Go,约 1 分钟;APP_VERSION 注入版本号)
 APP_VERSION=$(cat ../VERSION 2>/dev/null || echo dev) docker compose up -d --build
@@ -196,10 +227,30 @@ docker compose -f docker-compose.dist.yml up -d
 # 验证:curl -s http://localhost:8099/version   # 应为 {"version":"<VERSION 内容>"}
 ```
 
-## 暴露给手机
+## 管理后台(mail-admin)
 
-`mail-api` 在 `:8099`。用现有 **Cloudflare Tunnel** 指向 `host:8099` + Access 策略,只允许本人设备。
-**严禁把 8099 裸暴露公网**——它能读全部邮件、以你名义发信。
+内网图形化管理 app token + 看状态,免去手翻 config。
+
+```bash
+# 1. 设管理密码(放 secrets,不进 git;没设的话后台登录页会提示创建)
+printf '管理后台密码' > <config>/secrets/admin.pass
+# 2. 起服务后,内网浏览器打开
+http://<服务器内网IP>:8098      # 用管理密码登录
+# 3. 给每台设备「新建 Token」→ 复制整串填进 app 的「API Token」
+```
+
+- **多 token + 吊销**:每台设备一个 token;**丢设备就在后台删掉它的 token**(即时生效、不影响其他设备),无需全量轮换。
+- **推送设备绑定**:FCM 推送 token 记录其注册所用的 app token;**删 app token 会连带删除其名下推送设备** → 丢设备一键同时断「读信 + 推送」(否则旧 FCM token 仍会把发件人/主题推过去)。后台「推送设备」区也可单删/清空;首次从旧版升级时,旧的无归属设备显示「未关联·旧」,点「清空所有推送设备」一次,有效设备下次开 app 会带归属重新注册。
+- 鉴权来源:`require_auth` 接受后台管理的多 token(`/data/app-tokens.json`),并**兼容**旧的单 `/config/api-token`。默认不再预设固定 token。
+- ⚠️ **mail-admin 只能内网**:别给它配 Cloudflare Tunnel、别在路由器转发 8098。只想本机访问:compose 端口写 `127.0.0.1:8098:8098`。
+
+## 暴露给手机(mail-api)
+
+`mail-api` 在 `:8099`,**跑的是明文 HTTP**。
+
+- ✅ **必须置于 HTTPS 之后**:用 **Cloudflare Tunnel** 指向 `host:8099`(Tunnel 提供 HTTPS + 出站连接,无需开端口)。
+- 🚫 **严禁把 8099 经路由器端口转发裸暴露公网**——明文 HTTP 直连公网会让 **token 与邮件被嗅探**;且它能读全部邮件、以你名义发信。
+- 可选再加 **Cloudflare Access(Service Token)** 作边缘第二道闸,但不是必须;最低要求是"走 HTTPS + 强 token"。
 
 ## API 速查
 

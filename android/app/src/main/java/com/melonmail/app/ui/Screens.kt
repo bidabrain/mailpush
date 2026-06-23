@@ -110,6 +110,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -1238,6 +1240,7 @@ fun SettingsScreen(vm: MailViewModel, nav: NavHostController) {
 
     var base by remember(savedBase) { mutableStateOf(savedBase) }
     var token by remember(savedToken) { mutableStateOf(savedToken) }
+    var showToken by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
     var pushStatus by remember { mutableStateOf<String?>(null) }
 
@@ -1259,7 +1262,17 @@ fun SettingsScreen(vm: MailViewModel, nav: NavHostController) {
             SettingsCard {
                 OutlinedTextField(base, { base = it; saved = false }, label = { Text("服务器地址 (https://…)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(token, { token = it; saved = false }, label = { Text("API Token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(
+                    token, { token = it; saved = false },
+                    label = { Text("API Token") },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showToken = !showToken }) {
+                            Text(if (showToken) "隐藏" else "显示")
+                        }
+                    },
+                )
                 Spacer(Modifier.height(12.dp))
                 Button(onClick = {
                     scope.launch {

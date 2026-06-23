@@ -1,15 +1,15 @@
 # 目标机部署用(从 Docker Hub 拉镜像,不本地 build)。
-# 用法见 server/README 的「发布到 Docker Hub + 异机部署」。
+# 用法见 server/README 的「直接用预构建镜像」/「发布到 Docker Hub」。
 #
-# 镜像名由环境变量 MAILPUSH_IMAGE 提供(在 .env 里设 MAILPUSH_IMAGE=youruser/mailpush:latest),
-# 这样换版本/换仓库不用改本文件。
+# 默认镜像就是官方预构建的 bidabrain/mailpush:latest(linux/amd64),【直接 pull 即可,无需自己 build】。
+# 想用自己 build 的镜像:在 .env 里设 MAILPUSH_IMAGE=youruser/mailpush:latest 覆盖即可。
 #
 # 目录假设(ZimaOS 布局):compose 放在 /DATA/AppData/mailpush/src/,
 # 配置在 ../config,可写状态在 ../data(与本机开发一致)。
 
 services:
   mail-watch:
-    image: ${MAILPUSH_IMAGE:-youruser/mailpush:latest}
+    image: ${MAILPUSH_IMAGE:-bidabrain/mailpush:latest}
     container_name: mail-watch
     restart: always
     init: true
@@ -20,7 +20,7 @@ services:
       - ${DATA_DIR:-../data}:/data
 
   mail-api:
-    image: ${MAILPUSH_IMAGE:-youruser/mailpush:latest}
+    image: ${MAILPUSH_IMAGE:-bidabrain/mailpush:latest}
     container_name: mail-api
     restart: always
     init: true
@@ -28,6 +28,21 @@ services:
     command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8099"]
     ports:
       - "8099:8099"
+    volumes:
+      - ${CONFIG_DIR:-../config}:/config:ro
+      - ${DATA_DIR:-../data}:/data
+
+  # 管理后台 —— ⚠️ 仅内网:只映射到局域网,【不要】经 Cloudflare/路由器暴露公网。
+  # 想只让本机访问可写成 "127.0.0.1:8098:8098"。
+  mail-admin:
+    image: ${MAILPUSH_IMAGE:-bidabrain/mailpush:latest}
+    container_name: mail-admin
+    restart: always
+    init: true
+    env_file: .env
+    command: ["uvicorn", "admin:app", "--host", "0.0.0.0", "--port", "8098"]
+    ports:
+      - "${ADMIN_PORT:-8098}:8098"
     volumes:
       - ${CONFIG_DIR:-../config}:/config:ro
       - ${DATA_DIR:-../data}:/data

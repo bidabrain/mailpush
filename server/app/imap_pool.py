@@ -1,8 +1,8 @@
 """持久 IMAP 连接池(替代 himalaya 每次 fork 子进程 + 新建连接)。
 
 每个账号维护一条长连的 imaplib.IMAP4(_SSL),按账号加锁【串行】复用:
-  - 首连昂贵的账号(如 KIAS:服务器对家庭宽带做 rDNS,新连接 greeting 要等 ~53s)
-    只在首连付一次,之后操作毫秒级;
+  - 首连昂贵的账号(某些企业/机构邮箱对来访 IP 做反向 DNS,家庭宽带无 PTR 记录,
+    新连接 greeting 要等数十秒)只在首连付一次,之后操作毫秒级;
   - 连接被服务器/路由器掐掉后【自动重连】(操作失败 → 丢弃 → 重连重试一次);
   - 后台 daemon 保活线程定时 NOOP,把昂贵账号的连接焐热,避免空闲被回收后又重付建连。
 
@@ -25,7 +25,7 @@ import tomllib
 from dataclasses import dataclass
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.toml")
-# KIAS rDNS 首连 ~53s,建连超时留余量;连上后命令超时收紧,半死连接快速失败。
+# 做反向 DNS 的邮箱首连可能数十秒,建连超时留余量;连上后命令超时收紧,半死连接快速失败。
 CONNECT_TIMEOUT = float(os.environ.get("IMAP_CONNECT_TIMEOUT", "90"))
 OP_TIMEOUT = float(os.environ.get("IMAP_OP_TIMEOUT", "30"))
 # 保活心跳间隔:压在常见 NAT/路由器 ~5min 空闲回收线以内、远低于服务器 ≥30min 自动登出。
@@ -129,7 +129,7 @@ class _Pool:
             conn = imaplib.IMAP4(cfg.host, cfg.port, timeout=CONNECT_TIMEOUT)
             if cfg.encryption == "starttls":
                 conn.starttls(ssl_context=ctx)
-        # greeting 已收到(KIAS rDNS 已付);后续命令收紧超时,半死连接快速失败 → 触发重连。
+        # greeting 已收到(rDNS 已付);后续命令收紧超时,半死连接快速失败 → 触发重连。
         try:
             conn.sock.settimeout(OP_TIMEOUT)
         except OSError:
