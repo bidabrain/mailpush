@@ -23,7 +23,7 @@
   —— **0.2.0 起**取代原 himalaya CLI 后端(见下「变更日志」)
 - **发信**:Python smtplib(直连 SMTP,不碰 IMAP)
 - **API**:FastAPI(bearer 鉴权;**须置于 HTTPS 之后**)
-- **管理后台**:独立的内网 web 界面(密码登录,管理 app token + 看状态),**独立端口、仅限局域网**
+- **管理后台**:独立的内网 web 界面(密码登录,图形化管理**邮箱账户**/app token/OAuth + 看状态),**独立端口、仅限局域网**
 - **推送**:FCM HTTP v1 + Firebase Admin SDK(data message,多设备)
 - **客户端**:Kotlin + Jetpack Compose + Material 3
 
@@ -51,7 +51,7 @@
 - 详情页可展开看完整发件人/收件人地址
 - **离线缓存**:无网时可看已加载的收件箱与读过的正文;正文缓存有容量上限自动回收(置顶豁免)
 - FCM 推送,多设备自动注册(token 自动上报);点通知直达对应邮件
-- **内网管理后台**(独立端口):图形化**管理多个 app token**(每台设备一个);**删某 token 连带切断其推送设备**,丢设备一键同时断「读信 + 推送」;查看版本/运行状态、管理推送设备;app 端 token 输入框掩码显示
+- **内网管理后台**(独立端口):图形化**管理邮箱账户**(增删改收发+推送账户,选 provider 预设自动填 host/port,直接在网页里设密码;每个账户可单独决定是否开推送)、**管理多个 app token**(每台设备一个;**删某 token 连带切断其推送设备**,丢设备一键同时断「读信 + 推送」)、**OAuth 授权**(Outlook 等);查看版本/运行状态、管理推送设备;app 端 token 输入框掩码显示
 
 ## 快速上手(从零跑起来)
 
@@ -67,24 +67,24 @@ git clone https://github.com/bidabrain/mailpush && cd mailpush
 cp /path/to/google-services.json android/app/google-services.json
 ( cd android && ./gradlew assembleDebug )      # 产物:android/app/build/outputs/apk/debug/app-debug.apk → 装到手机
 
-# 3) 服务端:准备配置 + 密钥(都放 server/config,已被 .gitignore 忽略)
+# 3) 服务端:准备密钥(都放 server/config,已被 .gitignore 忽略)
 cd server
 mkdir -p config/secrets data
 cp .env.sample .env
 #   编辑 .env:取消注释 CONFIG_DIR=./config 与 DATA_DIR=./data(让配置落在 server/config、server/data)
-cp config.sample.toml     config/config.toml          # 改成你的账号(host/login/email)
-cp imapnotify.sample.yaml config/imapnotify.yaml      # 同样的账号(监听用)
-printf '邮箱应用专用密码' > config/secrets/gmail.pass   # 每个账号一个 .pass(名字与 config 里 auth.cmd 对应)
-printf '管理后台密码'    > config/secrets/admin.pass    # 内网管理后台登录用
-cp /path/to/service-account.json config/service-account.json   # Firebase 服务端密钥
+printf '管理后台密码'    > config/secrets/admin.pass    # 内网管理后台登录用(必需)
+cp /path/to/service-account.json config/service-account.json   # Firebase 服务端密钥(发推送必需)
+#   邮箱账户:本步【先不用配】—— 起服务后在管理后台网页里加(方式 B,见下);
+#   想用文件配置的看「两种配置账户的方式 · 方式 A」。
 
 # 4) 拉官方镜像并运行(docker-compose.dist.yml 默认就指向 bidabrain/mailpush:latest)
 docker compose -f docker-compose.dist.yml pull
 docker compose -f docker-compose.dist.yml up -d
 
-# 5) 建 token → 连 app
-#   内网浏览器开 http://<服务器内网IP>:8098,用管理密码登录 → 给手机「新建 Token」
-#   app 设置里填:服务器地址 + 该 Token(地址生产环境务必走 HTTPS,见「安全」)
+# 5) 内网浏览器开 http://<服务器内网IP>:8098,用管理密码登录:
+#   - 「邮箱账户」加你的邮箱(填地址+应用专用密码,选 provider 预设)→ 立刻能收发,几秒内起推送
+#   - 「App Token」给每台手机「新建 Token」→ app 设置里填:服务器地址 + 该 Token
+#   (服务器地址生产环境务必走 HTTPS,见「安全」)
 ```
 
 完成后:发封测试邮件,手机应收到 FCM 推送;点开能读正文、回信、发信。
@@ -92,6 +92,22 @@ docker compose -f docker-compose.dist.yml up -d
 - **架构匹配**:官方镜像是 `linux/amd64`。arm64 机器(树莓派等)需自行 `buildx` 构建,详见 [`server/README.md`](server/README.md)。
 - **自己构建服务端**:`docker compose up -d --build`,或 `buildx --push` 发到自己的 Docker Hub,见 `server/README.md`。
 - ⚠️ **上线前务必读「安全」**:API(8099)要放 HTTPS 之后,管理后台(8098)只能内网。
+
+### 两种配置账户的方式(可并存)
+
+收发邮箱账户有两种配置途径,**互相兼容、可混用**:同名时以 webui 为准,异名各自生效。
+
+| | **方式 A · 手写配置文件** | **方式 B · webui 管理后台**(:8098) |
+|---|---|---|
+| 存放 | `config/config.toml` + `config/imapnotify.yaml` + `config/secrets/*.pass`(`/config`,**只读挂载**) | `/data/accounts.json` + `/data/secrets/<name>.pass`(可写,**网页里增删改**) |
+| 加账户 | 复制 `*.sample` 改账号,改完重启 `mail-api`/`mail-watch` | 网页「邮箱账户」填表保存,**收发即时生效,推送自动重启监听** |
+| 设密码 | 写进 `secrets/<name>.pass` | **网页密码框直接填**(编辑时留空=不改) |
+| 只收发不推送 | config 写、imapnotify 不写 | **取消勾选「启用推送监听」** |
+| 适合 | 批量/版本化/CI、想把配置纳入 git | 日常增删、不想 SSH、图形化操作 |
+
+- **方式 B 的底层**:mail-api 读 `config.toml` 后把 webui 账户**叠加**进来(`accounts.py` 的 `overlay_config`);mail-watch 用 `render_imapnotify.py` 把 webui 账户与手写 base 合并成 `/data/imapnotify.generated.yaml` 再跑 goimapnotify,改动经 `/data/watch.reload` 触发自动重启。`/config` 始终只读,安全边界不变。
+- **可以完全不写 config 文件**:只放 `admin.pass` + `service-account.json` 就能起服务,账户全在 webui 加(零账户时 mail-watch 空转等待,不报错)。
+- 详见 [`server/README.md`](server/README.md)。
 
 ### 接入 Outlook / Microsoft 365 / Hotmail(OAuth2,不是密码)
 
@@ -103,7 +119,9 @@ docker compose -f docker-compose.dist.yml up -d
    - *API permissions* 加**委托(Delegated)**权限:`IMAP.AccessAsUser.All`、`SMTP.Send`、`offline_access`;
    - 记下 **Application (client) ID**(**不要**建 client secret)。
 2. **在内网管理后台授权**(最省事):浏览器开 `http://<内网IP>:8098` → 「OAuth」区填账号名(如 `outlook`)+ 上面的 client_id → 保存 → 点「授权」→ 按提示在浏览器输设备码、用 Outlook 账户登录同意。凭据会自动存到 `/data/oauth/`(refresh token 后续自动静默刷新)。
-3. **加账号块**:`config.toml` 与 `imapnotify.yaml` 各加一个 Outlook 账号(照两个 `*.sample` 文件里的 Outlook 段:`auth.type = "oauth2"` / `xoauth2: true`,`auth.cmd` 与 `passwordCMD` 都调 `oauth_token.py`),重启 `mail-api` 与 `mail-watch` 即生效。
+3. **加账号**(任选其一,见上「两种配置账户的方式」):
+   - **方式 B(推荐)**:授权后,在管理后台「邮箱账户」用**相同账号名**添加一条(provider 选 Outlook、鉴权选 OAuth2、密码留空),保存即生效;
+   - **方式 A**:在 `config.toml` 与 `imapnotify.yaml` 各加一个 Outlook 账号块(照 `*.sample` 的 Outlook 段:`auth.type = "oauth2"` / `xoauth2: true`,`auth.cmd` 与 `passwordCMD` 都调 `oauth_token.py`),重启 `mail-api` 与 `mail-watch`。
    - ⚠️ **邮箱地址必须填真实域名**:个人号可能是 `@live.com` / `@hotmail.com` / `@outlook.com` 任一;域名写错会报 `User is authenticated but not connected`(OAuth 授权能成功、token 也有效,但 IMAP 按错地址找不到邮箱)。`host` 统一是 `outlook.office365.com`,只地址要对。
 
 安卓 app **无需任何改动** —— Outlook 只是多一个账号。详细 Azure 步骤与排错见 [`server/README.md`](server/README.md#接入-outlook--microsoft-365oauth2)。
@@ -130,6 +148,14 @@ docker compose -f docker-compose.dist.yml up -d
 **升版本**:改 `VERSION` 一个文件 → 重新构建 app 与镜像即可。
 
 ## 变更日志
+
+### 0.3.3
+- **管理后台可视化管理邮箱账户(收发 + 推送)**:不再必须手写 `config.toml` / `imapnotify.yaml`。
+  - 新增 `app/accounts.py`:webui 账户存可写的 `/data/accounts.json` + `/data/secrets/<name>.pass`,`overlay_config()` 把它们叠加进 himalaya schema 供 mail-api 读(**现读现生效**);提供 provider 预设(Gmail/Outlook/Yahoo/网易/Fastmail),网页里直接设密码;
+  - 新增 `app/render_imapnotify.py`:把 webui 账户与 `/config` 的手写 base 合并渲染成 `/data/imapnotify.generated.yaml`;`watch-entrypoint.sh` 监听 `/data/watch.reload`,改账户后**自动重启 goimapnotify**,零账户时空转等待不报错;
+  - **每个账户可单独开关推送**(只用 API 收发、不进推送监听);
+  - **两种配置方式可并存**:`/config` 始终只读、手写账户作为 base 兼容保留,同名时 webui 覆盖;可完全不写 config 文件、纯靠 webui 起服务;
+  - `imap_pool` / `mailsend` / `api.py` 读配置处统一走 overlay 并容忍 `config.toml` 缺失;新增依赖 `pyyaml`。
 
 ### 0.2.2
 - **接入 Outlook / Microsoft 365 / Hotmail(OAuth2 / XOAUTH2)**:微软停用密码登录后唯一可行路径。

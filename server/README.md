@@ -4,7 +4,8 @@
 
 - **推送线** `mail-watch`:`goimapnotify`(IMAP IDLE 监听)→ `onNewMail` → `push-fcm.py`(用 `imap_client` 抓最新一封补 sender/subject,再发 FCM HTTP v1)→ 安卓 app 弹通知。
 - **API 线** `mail-api`(:8099):`FastAPI`(`api.py`)收/读走 **Python `imaplib` 持久连接池**(`imap_pool.py` + `imap_client.py`),发信走 **`smtplib`**(`mailsend.py`),供手机读列表 / 读正文 / 发信 / 回信 / 转发 / 删除。
-- **管理后台** `mail-admin`(:8098,**仅内网**):`admin.py`,密码登录,图形化管理 app token(新建/删除)+ 看版本/状态。
+- **管理后台** `mail-admin`(:8098,**仅内网**):`admin.py`,密码登录,图形化管理 app token(新建/删除)、**邮箱账户(新增/编辑/删除收发+推送账户,选 provider 预设自动填 host/port)**、OAuth 授权 + 看版本/状态。
+  - 后台管理的账户存可写的 `/data/accounts.json` + `/data/secrets/<name>.pass`(`accounts.py`);mail-api 读 `config.toml` 后用 `overlay_config()` 叠加(现读现生效),mail-watch 由 `render_imapnotify.py` 把账户 + 手写 base 合并成 `/data/imapnotify.generated.yaml` 后跑 goimapnotify,改动经 `/data/watch.reload` 触发自动重启。`/config` 仍只读;手写在 `config.toml`/`imapnotify.yaml` 的账户作为 base 兼容保留,同名时后台账户覆盖。
 
 手机不存任何邮箱凭据、不维持持久 IMAP 连接。整体设计见仓库根 `mail-push-relay-design.md` 与 `docker-design.md`。
 
@@ -39,14 +40,18 @@
 ```
 /DATA/AppData/mailpush/
 ├── src/                      # 本目录(server/)内容,compose 在这里跑
-├── config/
-│   ├── config.toml           # 账号/收发配置(由 config.sample.toml 改名)
-│   ├── imapnotify.yaml       # goimapnotify 配置(由 imapnotify.sample.yaml 改名)
+├── config/                   # 只读挂载(:ro);手写账户的 base,可选
+│   ├── config.toml           # 手写账号/收发配置(由 config.sample.toml 改名;也可全用后台管理而留空)
+│   ├── imapnotify.yaml       # 手写 goimapnotify base(由 imapnotify.sample.yaml 改名;后台账户会与之合并)
 │   ├── service-account.json  # Firebase service account(发 FCM)
 │   ├── api-token             # mail-api 的 bearer token(openssl rand -hex 32)
 │   └── secrets/
-│       └── gmail.pass        # Gmail App Password(16 位,收发共用)
+│       └── gmail.pass        # 手写账户的 App Password(后台管理的账户密码改存 /data/secrets/)
 └── data/                     # 可写状态:附件缓存 / push 去重 last-seen / device-tokens.json(自动创建)
+    ├── accounts.json         # 管理后台增删的收发+推送账户(accounts.py);overlay 到 config.toml 之上
+    ├── secrets/<name>.pass   # 后台管理账户的密码/授权码(0600)
+    ├── imapnotify.generated.yaml  # 由 base + accounts.json 渲染,mail-watch 实际跑这个
+    ├── watch.reload          # 账户变更标记;mail-watch 监听到就重启 goimapnotify
     └── oauth/                # Outlook 等 OAuth2 账号:<account>.json(client_id)+ <account>.cache.bin(token,会轮换)
                               #   由管理后台或 oauth_enroll.py 写;两容器共享、可写,故放 /data 而非只读的 /config
 ```

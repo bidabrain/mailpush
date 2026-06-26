@@ -37,6 +37,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import hmac
 
+import accounts as account_store  # 别名:避免与下方 @app.get("/accounts") 的 def accounts 撞名遮蔽
 import apptokens
 import devicetokens
 import imap_client
@@ -94,8 +95,12 @@ def require_auth(
 
 
 def _load_accounts() -> list[str]:
-    with open(CONFIG_PATH, "rb") as f:
-        cfg = tomllib.load(f)
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            cfg = tomllib.load(f)
+    except OSError:
+        cfg = {}  # 没有 config.toml 也行:账户可能全由 webui(/data/accounts.json)管理
+    cfg = account_store.overlay_config(cfg)  # 叠加 webui 账户
     return list(cfg.get("accounts", {}).keys())
 
 
@@ -294,7 +299,8 @@ def _account_email(account: str) -> str | None:
         with open(CONFIG_PATH, "rb") as f:
             cfg = tomllib.load(f)
     except OSError:
-        return None
+        cfg = {}
+    cfg = account_store.overlay_config(cfg)  # 叠加 webui 账户
     acc = cfg.get("accounts", {}).get(account, {})
     return acc.get("email") or acc.get("backend", {}).get("login")
 

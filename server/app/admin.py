@@ -17,6 +17,7 @@ import urllib.request
 from fastapi import Cookie, FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+import accounts
 import apptokens
 import devicetokens
 
@@ -57,6 +58,117 @@ def _accounts() -> list[str]:
             return list(tomllib.load(f).get("accounts", {}).keys())
     except (OSError, tomllib.TOMLDecodeError):
         return []
+
+
+def _esc(v) -> str:
+    return html.escape(str(v if v is not None else ""))
+
+
+def _enc_select(name: str, cur: str | None) -> str:
+    # 空选项让 provider 预设能填加密方式(选了具体值才覆盖预设)
+    opts = f"<option value=''{' selected' if not cur else ''}>(按预设)</option>"
+    for v, label in (("tls", "TLS(隐式,993/465)"), ("starttls", "STARTTLS(587)"), ("none", "无加密")):
+        sel = " selected" if cur == v else ""
+        opts += f"<option value={v}{sel}>{label}</option>"
+    return f"<select name='{name}'>{opts}</select>"
+
+
+def _account_form(rec: dict | None = None) -> str:
+    """新增/编辑账户表单。rec=None 为新增;否则预填(name 设只读)。"""
+    r = rec or {}
+    imap = r.get("imap", {}) or {}
+    smtp = r.get("smtp", {}) or {}
+    is_edit = rec is not None
+    cur_preset = "custom"
+    preset_opts = ""
+    for key, label in (("custom", "自定义/手填"), ("gmail", "Gmail"), ("outlook", "Outlook/M365(OAuth2)"),
+                       ("yahoo", "Yahoo"), ("netease126", "网易 126"), ("netease163", "网易 163"),
+                       ("fastmail", "Fastmail")):
+        sel = " selected" if key == cur_preset else ""
+        preset_opts += f"<option value={key}{sel}>{label}</option>"
+    auth = r.get("auth", "password")
+    pw_sel = " selected" if auth == "password" else ""
+    oa_sel = " selected" if auth == "oauth2" else ""
+    name_attr = "readonly" if is_edit else ""
+    title = f"编辑账户 {_esc(r.get('name'))}" if is_edit else "新增账户"
+    pw_ph = "应用专用密码/授权码(留空=不修改)" if is_edit else "应用专用密码/授权码"
+    return (
+        f"<form method=post action=/accounts/save class=card>"
+        f"<div><b>{title}</b></div>"
+        f"<p><input type=text name=name placeholder='账号名(英数.-_,如 gmail)' value='{_esc(r.get('name'))}' {name_attr}> "
+        f"<input type=text name=email placeholder='邮箱地址 you@example.com' value='{_esc(r.get('email'))}'></p>"
+        f"<p>provider 预设 <select name=preset>{preset_opts}</select>"
+        f" 鉴权 <select name=auth><option value=password{pw_sel}>密码/授权码</option>"
+        f"<option value=oauth2{oa_sel}>OAuth2(Outlook 等)</option></select></p>"
+        f"<p><input type=password name=password placeholder='{pw_ph}' style=min-width:280px></p>"
+        f"<p class=muted>下面留空则用所选 provider 预设自动填(选「自定义」时必填):</p>"
+        f"<p>IMAP <input type=text name=imap_host placeholder=host value='{_esc(imap.get('host'))}' style=min-width:200px>"
+        f" : <input type=text name=imap_port placeholder=993 value='{_esc(imap.get('port'))}' style=width:70px> "
+        f"{_enc_select('imap_encryption', imap.get('encryption'))}</p>"
+        f"<p>SMTP <input type=text name=smtp_host placeholder=host value='{_esc(smtp.get('host'))}' style=min-width:200px>"
+        f" : <input type=text name=smtp_port placeholder=465 value='{_esc(smtp.get('port'))}' style=width:70px> "
+        f"{_enc_select('smtp_encryption', smtp.get('encryption'))}</p>"
+        f"<p><label><input type=checkbox name=save_copy {'checked' if smtp.get('save_copy') else ''}> "
+        f"SMTP 发信后自存「已发送」(Gmail 勿勾,会重复)</label></p>"
+        f"<p><label><input type=checkbox name=push {'checked' if r.get('push', True) else ''}> 启用推送监听(imapnotify)</label> "
+        f"<label><input type=checkbox name=enable_id_command {'checked' if r.get('enable_id_command') else ''}> "
+        f"发 IMAP ID(网易 126/163 必须)</label> "
+        f"<label><input type=checkbox name=default {'checked' if r.get('default') else ''}> 设为默认账户</label></p>"
+        f"<button type=submit>{'保存修改' if is_edit else '添加账户'}</button>"
+        f"<div class=muted style=margin-top:8px>OAuth2 账户:此处密码留空,保存后到下方「OAuth」区填 client_id 并点「授权」。"
+        f"改动推送账户后,mail-watch 会自动重启监听以生效。</div>"
+        f"</form>"
+    )
+
+
+def _accounts_html() -> str:
+    webui = accounts.load()
+    webui_names = {a["name"] for a in webui}
+    # config.toml 里手写、且未被 webui 接管的账户:只读展示,提示如何纳管
+    config_only = [n for n in _accounts() if n not in webui_names]
+
+    rows = ""
+    for a in webui:
+        nm = a["name"]
+        auth = a.get("auth", "password")
+        if auth == "oauth2":
+            ok = oauth is not None and oauth.is_enrolled(nm)
+            status = "OAuth2 已授权 ✅" if ok else "OAuth2 未授权(去下方 OAuth 区授权)"
+        else:
+            status = "已设密码 ✅" if accounts.has_secret(nm) else "⚠️ 未设密码"
+        push = "推送开" if a.get("push", True) else "推送关"
+        rows += (
+            "<tr>"
+            f"<td>{_esc(nm)}{' · 默认' if a.get('default') else ''}<br><span class=muted>{_esc(a.get('email'))}</span></td>"
+            f"<td><span class=muted>{_esc((a.get('imap') or {}).get('host'))} · {push}<br>{_esc(status)}</span></td>"
+            "<td>"
+            f"<a href='/accounts/edit?name={_esc(nm)}'><button type=button>编辑</button></a> "
+            "<form method=post action=/accounts/delete style=display:inline "
+            "onsubmit=\"return confirm('删除此账户?会一并删掉它的密码文件,并停止其推送')\">"
+            f"<input type=hidden name=name value='{_esc(nm)}'>"
+            "<button class=danger type=submit>删除</button></form>"
+            "</td></tr>"
+        )
+    if not rows:
+        rows = "<tr><td colspan=3 class=muted>还没有 webui 管理的账户,在下面添加。</td></tr>"
+
+    co_html = ""
+    if config_only:
+        co_html = (
+            "<div class=card><b>config.toml 手写账户(只读)</b>"
+            f"<p class=muted>{_esc('、'.join(config_only))}</p>"
+            "<p class=muted>这些是手写在 /config/config.toml 的账户,仍正常工作但不在此管理。"
+            "想在此纳管:用相同账号名「添加账户」即可覆盖。</p></div>"
+        )
+
+    return (
+        "<h2>邮箱账户</h2>"
+        "<div class=card><table>"
+        "<tr><td><b>账号 / 邮箱</b></td><td><b>IMAP / 状态</b></td><td></td></tr>"
+        f"{rows}</table></div>"
+        f"{co_html}"
+        + _account_form()
+    )
 
 
 def _api_health() -> str:
@@ -193,7 +305,8 @@ def _dashboard() -> HTMLResponse:
             "<input type=text name=client_id placeholder='Azure Application (client) ID' style=min-width:260px> "
             "<button type=submit>保存</button>"
             "<div class=muted style=margin-top:8px>保存后点该账号「授权」→ 按提示在浏览器登录同意。"
-            "仍需在 config.toml / imapnotify.yaml 加该账号块(见 sample,auth.type=oauth2)。</div>"
+            "授权后,在上方「邮箱账户」用相同账号名添加一条账户(provider 选 Outlook、鉴权选 OAuth2)即可收发+推送;"
+            "也可继续手写 config.toml / imapnotify.yaml。</div>"
             "</form>"
         )
 
@@ -208,6 +321,8 @@ def _dashboard() -> HTMLResponse:
         f"<div>账户:{html.escape('、'.join(accs)) or '(无)'}</div>"
         f"<div>已注册推送设备:{len(devs)}</div>"
         "</div>"
+
+        + _accounts_html() +
 
         "<h2>App Token</h2>"
         "<div class=card><table>"
@@ -295,6 +410,65 @@ def devices_clear(session: str | None = Cookie(default=None, alias=COOKIE)):
     if not _authed(session):
         return RedirectResponse("/", status_code=303)
     devicetokens.clear()
+    return RedirectResponse("/", status_code=303)
+
+
+# ---------- 邮箱账户 ----------
+
+@app.get("/accounts/edit", response_class=HTMLResponse)
+def accounts_edit(name: str = "", session: str | None = Cookie(default=None, alias=COOKIE)):
+    if not _authed(session):
+        return _login_page("")
+    rec = accounts.get(name)
+    if not rec:
+        return RedirectResponse("/", status_code=303)
+    return _page(
+        f"<h1>编辑账户</h1>{_account_form(rec)}<p><a href=/>返回</a></p>"
+    )
+
+
+@app.post("/accounts/save")
+def accounts_save(
+    name: str = Form(""),
+    email: str = Form(""),
+    preset: str = Form("custom"),
+    auth: str = Form("password"),
+    password: str = Form(""),
+    imap_host: str = Form(""),
+    imap_port: str = Form(""),
+    imap_encryption: str = Form(""),
+    smtp_host: str = Form(""),
+    smtp_port: str = Form(""),
+    smtp_encryption: str = Form(""),
+    save_copy: str = Form(""),
+    push: str = Form(""),
+    enable_id_command: str = Form(""),
+    default: str = Form(""),
+    session: str | None = Cookie(default=None, alias=COOKIE),
+):
+    if not _authed(session):
+        return RedirectResponse("/", status_code=303)
+    form = {
+        "name": name, "email": email, "preset": preset, "auth": auth,
+        "imap": {"host": imap_host, "port": imap_port or None, "encryption": imap_encryption},
+        "smtp": {"host": smtp_host, "port": smtp_port or None, "encryption": smtp_encryption,
+                 "save_copy": bool(save_copy)},
+        "push": bool(push), "enable_id_command": bool(enable_id_command), "default": bool(default),
+    }
+    try:
+        accounts.upsert(form, password=password)
+    except accounts.AccountError as exc:
+        return _page(f"<h1>保存失败</h1><div class=card class=err>{html.escape(str(exc))}</div>"
+                     "<p><a href=/>返回</a></p>")
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/accounts/delete")
+def accounts_delete(name: str = Form(""), session: str | None = Cookie(default=None, alias=COOKIE)):
+    if not _authed(session):
+        return RedirectResponse("/", status_code=303)
+    if name:
+        accounts.delete(name)
     return RedirectResponse("/", status_code=303)
 
 

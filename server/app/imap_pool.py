@@ -24,6 +24,8 @@ import time
 import tomllib
 from dataclasses import dataclass
 
+import accounts  # webui 管理的账户(/data),叠加在 config.toml 之上
+
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.toml")
 # 做反向 DNS 的邮箱首连可能数十秒,建连超时留余量;连上后命令超时收紧,半死连接快速失败。
 CONNECT_TIMEOUT = float(os.environ.get("IMAP_CONNECT_TIMEOUT", "90"))
@@ -80,8 +82,9 @@ def load_config(account: str) -> ImapConfig:
     try:
         with open(CONFIG_PATH, "rb") as f:
             cfg = tomllib.load(f)
-    except OSError as exc:
-        raise ImapError(f"读不到配置 {CONFIG_PATH}: {exc}")
+    except OSError:
+        cfg = {}  # 没有 config.toml 也行:可能账户全由 webui(/data/accounts.json)管理
+    cfg = accounts.overlay_config(cfg)  # 叠加 webui 账户(同名覆盖)
     acc = cfg.get("accounts", {}).get(account)
     if not acc:
         raise ImapError(f"账号 {account} 不在 config")

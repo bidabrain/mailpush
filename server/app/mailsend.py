@@ -14,6 +14,8 @@ import ssl
 import subprocess
 import tomllib
 
+import accounts  # webui 管理的账户(/data),叠加在 config.toml 之上
+
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.toml")
 
 
@@ -24,9 +26,10 @@ class SmtpError(RuntimeError):
 def _load() -> dict:
     try:
         with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)
-    except OSError as exc:
-        raise SmtpError(f"读不到配置 {CONFIG_PATH}: {exc}")
+            cfg = tomllib.load(f)
+    except OSError:
+        cfg = {}  # 没有 config.toml 也行:账户可能全由 webui 管理
+    return accounts.overlay_config(cfg)
 
 
 def account_from(account: str) -> str | None:
