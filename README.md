@@ -23,7 +23,7 @@
   —— **0.2.0 起**取代原 himalaya CLI 后端(见下「变更日志」)
 - **发信**:Python smtplib(直连 SMTP,不碰 IMAP)
 - **API**:FastAPI(bearer 鉴权;**须置于 HTTPS 之后**)
-- **管理后台**:独立的内网 web 界面(密码登录,图形化管理**邮箱账户**/app token/OAuth + 看状态),**独立端口、仅限局域网**
+- **管理后台**:独立的内网 web 界面(密码登录,图形化管理**邮箱账户**/app token/OAuth + 看状态),**独立端口、仅限局域网**;无桌面的 VPS 可用 `server/admin-cli.sh` 命令行做同样操作
 - **推送**:FCM HTTP v1 + Firebase Admin SDK(data message,多设备)
 - **客户端**:Kotlin + Jetpack Compose + Material 3
 
@@ -89,6 +89,7 @@ docker compose -f docker-compose.dist.yml up -d
 
 完成后:发封测试邮件,手机应收到 FCM 推送;点开能读正文、回信、发信。
 
+- **没有图形界面?(VPS / 纯 SSH)**:管理后台只绑本机、打不开浏览器时,用 [`server/admin-cli.sh`](server/admin-cli.sh) 在命令行做与网页**完全一样**的操作(登录、增删邮箱账户 / app token、OAuth 授权等)。见 [`server/README.md` 的「命令行管理后台」](server/README.md#命令行管理后台无图形界面--vps)。
 - **架构匹配**:官方镜像是 `linux/amd64`。arm64 机器(树莓派等)需自行 `buildx` 构建,详见 [`server/README.md`](server/README.md)。
 - **自己构建服务端**:`docker compose up -d --build`,或 `buildx --push` 发到自己的 Docker Hub,见 `server/README.md`。
 - ⚠️ **上线前务必读「安全」**:API(8099)要放 HTTPS 之后,管理后台(8098)只能内网。
