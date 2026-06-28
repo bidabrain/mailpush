@@ -110,6 +110,51 @@ curl -H "Authorization: Bearer $(cat /DATA/AppData/mailpush/config/api-token)" \
      "http://localhost:8099/inbox?account=gmail"
 ```
 
+## 命令行管理后台(无图形界面 / VPS)
+
+管理后台 `mail-admin`(:8098)**只能内网/本机访问、绝不暴露公网**。VPS 上没有桌面、又只把端口绑了
+`127.0.0.1`,打不开浏览器时,用 `server/admin-cli.sh` 在本机命令行做**与图形界面完全一样**的所有操作
+(纯表单 + cookie 会话,无 CSRF、不依赖 JS,curl 即可覆盖)。
+
+```bash
+cd server
+
+# 取密码方式三选一:交互输入 / ADMIN_PASS 环境变量 / ADMIN_PASS_FILE 文件
+# VPS 最省事:直接读后台的密码文件登录(会话 cookie 存到 ~/.melonmail-admin.cookies,后续免密)
+ADMIN_PASS_FILE=./config/secrets/admin.pass ./admin-cli.sh login
+
+# 看状态(版本 / mail-api 是否在跑 / 账户 / 推送设备)
+./admin-cli.sh status
+
+# 邮箱账户:新增/编辑(同名=覆盖编辑),选 preset 自动填 host/port/加密
+./admin-cli.sh add-account --name gmail --email me@gmail.com \
+    --preset gmail --password 'xxxx yyyy zzzz wwww' --default
+./admin-cli.sh accounts                 # 列出
+./admin-cli.sh del-account gmail        # 删除(含密码文件,停其推送)
+./admin-cli.sh add-account -h           # 看全部字段(自定义 host、网易 --enable-id 等)
+
+# App Token(每台设备一个,新建后把整串填进 app 的「API Token」)
+./admin-cli.sh new-token "我的手机"
+./admin-cli.sh tokens
+./admin-cli.sh del-token <id>           # 连带删该 token 名下的推送设备
+
+# 推送设备(FCM)
+./admin-cli.sh devices
+./admin-cli.sh del-device <token>
+./admin-cli.sh clear-devices
+
+# OAuth(Outlook 等):授权时打印代码+链接,到任意能上网的浏览器完成微软同意即可
+./admin-cli.sh oauth-save outlook <client_id>
+./admin-cli.sh oauth-enroll outlook     # 打印 user_code 和链接
+./admin-cli.sh oauth-status outlook     # 同意后轮询结果直到 ✅
+
+./admin-cli.sh logout
+```
+
+可调环境变量:`ADMIN_URL`(默认 `http://127.0.0.1:8098`)、`ADMIN_COOKIE`(cookie 文件路径)。
+**注意**:后台会话是内存态,`mail-admin` 容器重启后需重新 `login`。还有 `raw` 兜底子命令可直接打任意接口:
+`./admin-cli.sh raw POST /accounts/delete name=gmail`。
+
 ## 本机测试(本地 docker,不依赖 ZimaOS)
 
 在 `server/` 目录内操作,数据放 `server/config`、`server/data`(已被根 `.gitignore` 忽略,不会 push)。
